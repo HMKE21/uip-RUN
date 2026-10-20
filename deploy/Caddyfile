@@ -1,0 +1,12 @@
+# Caddy in front of the gateway: automatic HTTPS for the control socket and a wildcard certificate for the previews.
+# The wildcard needs the DNS challenge, so build Caddy with your DNS provider's module (https://caddy.community/t/how-to-use-dns-provider-modules-in-caddy-2/8148)
+# DNS: A records for  sandbox.example.com  and  *.sbx.example.com  -> this server.
+sandbox.example.com {
+	reverse_proxy 127.0.0.1:8787
+}
+*.sbx.example.com {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	reverse_proxy 127.0.0.1:8787
+}

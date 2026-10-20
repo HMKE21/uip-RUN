@@ -1,0 +1,19 @@
+{
+  "name": "uip-sandbox",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Sandbox gateway for the UIP project IDE: one locked-down Docker container per session (real terminal, Laravel / Node / Python servers, live preview).",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "local": "node scripts/local.js"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "^1.1.0",
+    "ws": "^8.18.0"
+  }
+}

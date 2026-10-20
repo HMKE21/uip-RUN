@@ -1,0 +1,16 @@
+[Unit]
+Description=UIP sandbox gateway
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/opt/uip-sandbox
+EnvironmentFile=/opt/uip-sandbox/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+User=sandbox
+Group=docker
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
