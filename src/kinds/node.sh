@@ -1,8 +1,12 @@
 echo "▶ Node project"
 if [ ! -f package.json ]; then echo "✗ package.json not found"; exit 1; fi
 if [ ! -d node_modules ]; then
-  echo "▶ npm install… (first run, can take a few minutes)"
-  npm install --no-audit --no-fund || { echo "✗ npm install failed"; exit 1; }
+  LOCKS=$(ls package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml 2>/dev/null)
+  if ! uip_restore node_modules node package.json $LOCKS; then
+    echo "▶ npm install… (first run, can take a few minutes)"
+    npm install --no-audit --no-fund --prefer-offline || { echo "✗ npm install failed"; exit 1; }
+    uip_save node_modules node package.json $LOCKS
+  fi
 fi
 export HOST=0.0.0.0 PORT=3000 BROWSER=none DANGEROUSLY_DISABLE_HOST_CHECK=true CHOKIDAR_USEPOLLING=1
 export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=@ALLOWED_HOSTS@

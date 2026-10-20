@@ -1,6 +1,7 @@
 // Docker provider: one locked-down container per session. Talks to the local Docker daemon through the CLI
 // (arguments are always passed as an array — never through a shell).
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { cfg, PREVIEW_PORTS, PROJECT_DIR } from './config.js';
 import { parseListening } from './proc.js';
@@ -11,7 +12,21 @@ const docker = (args, opts = {}) => run('docker', args, { maxBuffer: 8 * 1024 * 
 export const name = 'docker';
 export const containerName = (sid) => `uip-sbx-${sid}`;
 
-export async function createContainer(sid) {
+const cacheVolume = (userId) => `uip-cache-${createHash('sha1').update(String(userId)).digest('hex').slice(0, 12)}`;
+const CACHE_DIR = '/home/dev/.pcache';
+
+/** one Docker volume per user (never shared between users); created on first use and handed to the unprivileged `dev` user */
+async function ensureCache(userId) {
+  const v = cacheVolume(userId);
+  try { await docker(['volume', 'inspect', v], { timeout: 15_000 }); return v; } catch { /* not there yet */ }
+  await docker(['volume', 'create', '--label', 'uip.cache=1', v], { timeout: 15_000 });
+  await docker(['run', '--rm', '-u', '0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--network', 'none', '-v', `${v}:/c`, '--entrypoint', 'chown', cfg.image, '1000:1000', '/c'], { timeout: 60_000 });
+  return v;
+}
+
+export async function createContainer(sid, userId) {
+  let cache = null;
+  if (cfg.userCache && userId != null) { try { cache = await ensureCache(userId); } catch (e) { console.error('cache volume unavailable:', String(e.message).split('\n')[0]); } }
   await docker([
     'run', '-d', '--init', '--name', containerName(sid),
     '--label', 'uip.sandbox=1',
@@ -20,6 +35,7 @@ export async function createContainer(sid) {
     '--ulimit', 'nofile=4096:4096', '--ulimit', 'core=0',
     '--network', cfg.network,
     ...(cfg.runtime ? ['--runtime', cfg.runtime] : []),
+    ...(cache ? ['-v', `${cache}:${CACHE_DIR}`, '-e', `UIP_PCACHE=${CACHE_DIR}`, '-e', `UIP_CACHE_MAX_MB=${cfg.cacheMaxMb}`] : []),
     ...PREVIEW_PORTS.flatMap((p) => ['-p', `127.0.0.1::${p}`]),
     cfg.image, 'sleep', 'infinity',
   ]);

@@ -88,7 +88,7 @@ async function startSession(ws, claims, init, zip) {
   sessions.set(sid, s);
   try {
     send(ws, { t: 'status', text: 'Creating the environment…' });
-    await dk.createContainer(sid);
+    await dk.createContainer(sid, claims.sub);
     s.ports = await dk.portMap(sid);
     send(ws, { t: 'status', text: 'Uploading the project…' });
     const tmp = path.join(os.tmpdir(), `uip-${sid}.zip`);

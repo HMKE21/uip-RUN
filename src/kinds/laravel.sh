@@ -13,13 +13,16 @@ fi
 export SESSION_DRIVER=file CACHE_STORE=file CACHE_DRIVER=file QUEUE_CONNECTION=sync MAIL_MAILER=log LOG_CHANNEL=stderr
 @HTTPS_EXPORTS@
 if [ ! -d vendor ]; then
-  echo "▶ composer install… (first run, can take a few minutes)"
-  composer install --no-interaction --prefer-dist --no-progress --no-scripts || { echo "✗ composer install failed"; exit 1; }
-  composer dump-autoload -q 2>/dev/null
+  if ! uip_restore vendor composer composer.json composer.lock; then
+    echo "▶ composer install… (first run, can take a few minutes)"
+    composer install --no-interaction --prefer-dist --no-progress --no-scripts || { echo "✗ composer install failed"; exit 1; }
+    composer dump-autoload -q 2>/dev/null
+    uip_save vendor composer composer.json composer.lock
+  fi
 fi
 if [ -f package.json ] && [ ! -d public/build ] && grep -q '"build"' package.json; then
   echo "▶ building front-end assets (npm install && npm run build)…"
-  { npm install --no-audit --no-fund --loglevel=error && npm run build; } || echo "⚠ front-end build failed — continuing without it"
+  { npm install --no-audit --no-fund --loglevel=error --prefer-offline && npm run build; } || echo "⚠ front-end build failed — continuing without it"
 fi
 if ! grep -Eq '^APP_KEY=.+' .env 2>/dev/null; then php artisan key:generate --force --no-interaction || true; fi
 php artisan package:discover --ansi 2>/dev/null || true

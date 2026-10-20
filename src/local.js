@@ -12,7 +12,7 @@ const root = (sid) => join(tmpdir(), `uip-local-${sid}`);
 const proj = (sid) => join(root(sid), 'project');
 const procs = new Map(); // sid -> pty
 
-export async function createContainer(sid) { await mkdir(proj(sid), { recursive: true }); }
+export async function createContainer(sid, _userId) { await mkdir(proj(sid), { recursive: true }); }
 export async function portMap() { return Object.fromEntries(PREVIEW_PORTS.map((p) => [p, p])); }
 export async function uploadZip(sid, zipPath) {
   await new Promise((res, rej) => execFile('unzip', ['-q', '-o', zipPath, '-d', proj(sid)], (e) => (e && e.code !== 1 ? rej(e) : res())));

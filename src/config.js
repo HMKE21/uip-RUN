@@ -23,7 +23,10 @@ export const cfg = {
   maxSessions: int('MAX_SESSIONS', 6),
   maxLifeMs: int('MAX_LIFE_MIN', 60) * 60_000,   // hard limit for one session
   idleMs: int('IDLE_MIN', 20) * 60_000,          // no input / preview traffic
-  detachedMs: int('DETACHED_MIN', 5) * 60_000,   // browser closed or reloaded: how long the sandbox waits for a reconnect
+  detachedMs: int('DETACHED_MIN', 10) * 60_000,   // browser closed or reloaded: how long the sandbox waits for a reconnect
+  // per-user persistent cache volume (npm / composer / pip caches + node_modules / vendor snapshots): repeated runs skip the install
+  userCache: env.USER_CACHE !== '0',
+  cacheMaxMb: int('USER_CACHE_MAX_MB', 2048),
   maxZipBytes: int('MAX_ZIP_MB', 60) * 1024 * 1024,
 };
 
