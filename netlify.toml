@@ -6,6 +6,6 @@
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "frame-ancestors https://uip-v1.vercel.app http://localhost:5173 http://localhost:4173"
+    Content-Security-Policy = "frame-ancestors https://uip-nub.vercel.app http://localhost:5173 http://localhost:4173"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "no-referrer"

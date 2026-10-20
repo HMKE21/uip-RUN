@@ -28,7 +28,7 @@ if (!env.SANDBOX_JWT_SECRET || env.SANDBOX_JWT_SECRET.length < 32) {
   env.SANDBOX_JWT_SECRET = randomBytes(32).toString('hex');
   writeFileSync(ENV_FILE, [
     `SANDBOX_JWT_SECRET=${env.SANDBOX_JWT_SECRET}`,
-    'ALLOWED_ORIGINS=https://uip-v1.vercel.app,http://localhost:5173',
+    'ALLOWED_ORIGINS=https://uip-nub.vercel.app,http://localhost:5173',
     'PREVIEW_DOMAIN=localhost:8787',
     'PREVIEW_SCHEME=http',
     'MAX_SESSIONS=2',
@@ -36,6 +36,22 @@ if (!env.SANDBOX_JWT_SECRET || env.SANDBOX_JWT_SECRET.length < 32) {
   ].join('\n'));
   console.log(`Created ${ENV_FILE}`);
   env = Object.fromEntries(readFileSync(ENV_FILE, 'utf8').split(/\r?\n/).map((l) => /^([A-Z_]+)=(.*)$/.exec(l.trim())).filter(Boolean).map((m) => [m[1], m[2]]));
+}
+
+// Keep the allowed origins current even when .env.local already exists (it was created by an older run):
+// the deployed site must always be in the list or the gateway refuses its WebSocket.
+{
+  const REQUIRED = ['https://uip-nub.vercel.app', 'http://localhost:5173', 'http://localhost:4173'];
+  const have = String(env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter((s) => s && s !== 'https://uip-v1.vercel.app');
+  const next = [...new Set([...REQUIRED, ...have])].join(',');
+  if (next !== env.ALLOWED_ORIGINS) {
+    env.ALLOWED_ORIGINS = next;
+    const lines = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8').split(/\r?\n/) : [];
+    const i = lines.findIndex((l) => l.startsWith('ALLOWED_ORIGINS='));
+    if (i >= 0) lines[i] = `ALLOWED_ORIGINS=${next}`; else lines.splice(Math.max(0, lines.length - 1), 0, `ALLOWED_ORIGINS=${next}`);
+    writeFileSync(ENV_FILE, lines.join('\n'));
+    console.log('Updated ALLOWED_ORIGINS in .env.local');
+  }
 }
 
 // image

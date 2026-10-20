@@ -7,7 +7,7 @@ export const cfg = {
   port: int('PORT', 8787),
   jwtSecret: String(env.SANDBOX_JWT_SECRET || ''),
   // Origins that may open the control WebSocket (the UIP front-end).
-  allowedOrigins: list('ALLOWED_ORIGINS', 'https://uip-v1.vercel.app,http://localhost:5173,http://localhost:4173'),
+  allowedOrigins: list('ALLOWED_ORIGINS', 'https://uip-nub.vercel.app,http://localhost:5173,http://localhost:4173'),
   // Every session is served at <sessionId>.<PREVIEW_DOMAIN>. Needs a wildcard DNS record (+ TLS) in production.
   previewDomain: String(env.PREVIEW_DOMAIN || 'localhost:8787').toLowerCase(),
   previewScheme: env.PREVIEW_SCHEME === 'https' ? 'https' : 'http',
