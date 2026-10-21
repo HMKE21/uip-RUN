@@ -5,7 +5,7 @@ project** — and gives the IDE a real terminal (xterm.js) plus a live preview.
 
 | `kind` | what it runs |
 |---|---|
-| `lang` + `entry` | one file: JavaScript (browser-style `prompt/alert` work in the terminal) · TypeScript · Python · PHP · Java · C · C++ · C# · Go · Rust · Ruby · Perl · Lua · R · Julia · Bash · Kotlin · Dart · Haskell · Fortran · Pascal · SQL (SQLite) |
+| `lang` + `entry` | one file, **~60 file types / 45+ languages**: JavaScript (browser-style `prompt/alert` work in the terminal) · TypeScript · Python · PHP · Ruby · Perl · Raku · Lua · R · Julia · MATLAB/Octave · Bash · PowerShell · Tcl · AWK · SQL (SQLite) · Java · Kotlin · Scala · Groovy · Clojure · C · C++ · C# · F# · VB.NET · Go · Rust · Zig · Nim · D · Ada · COBOL · Assembly (NASM / GNU) · Fortran · Pascal · Dart · Haskell · OCaml · Elixir · Erlang · Common Lisp · Scheme · Racket · Prolog · Verilog · VHDL |
 | `laravel` | `composer install` → build assets → **SQLite or a real MariaDB** (when `.env` says `mysql`) → `migrate` → `php -S` |
 | `node` | `npm install` → Vite / Next / Nuxt / Angular dev server, `npm start`, or plain `node` |
 | `python` | `pip install -r requirements.txt` → script, Django `runserver`, Flask, FastAPI (`uvicorn`) |
@@ -14,7 +14,21 @@ project** — and gives the IDE a real terminal (xterm.js) plus a live preview.
 | `static` · `shell` · `auto` | static site · just a terminal · detect from the files |
 
 The per-kind scripts are plain bash in `src/kinds/*.sh` — add a language by adding a `case` line to `src/kinds/lang.sh`
-(and the toolchain to `image/Dockerfile`).
+(and the toolchain to `image/Dockerfile`, then bump `LABEL uip.sandbox.rev` there so existing images get rebuilt).
+
+### Why runs are fast
+* **Build cache** — a compiled program (C, C++, Rust, Go, Zig, Nim, D, Ada, COBOL, Java, Kotlin, Scala, C#, F#, VB.NET, OCaml…) is built once per
+  *(language, sources)*. **Run / Restart on unchanged code skips the compiler** (Rust: 8 s → 0.07 s). Kept in the per-user volume (or the
+  container's home when there is none); the 40 newest builds are kept.
+* **Dependency caches in the per-user volume** — npm, Composer, pip/**uv**, Maven, Gradle, NuGet, Go modules, Cargo: a second run of a project downloads nothing.
+* **uv** instead of pip for `requirements.txt` (10–50× faster), and the venv is reused until `requirements.txt` changes.
+* Tuned toolchains: `-O1` for C/C++/Rust (a debug build of a loop-heavy program is 10–50× slower), JVM flags for short programs (`SerialGC`, CDS,
+  C1 for the compilers), .NET without the NuGet audit / apphost / PGO, Go without cgo for single files (no C compiler in the build), one build + `dotnet app.dll` instead of `dotnet run`.
+* 2 CPUs per session by default (`SANDBOX_CPUS`; it is a cap, not a reservation).
+
+### "'xyz' is not installed in this sandbox image"
+Your image was built from an older `image/Dockerfile`. `npm run local` now compares the image's `uip.sandbox.rev` label with the Dockerfile and rebuilds by itself;
+on a server the gateway prints a warning at start-up — rebuild with `docker build -t uip-sandbox:latest image/`.
 
 ```
 Browser (UIP IDE) ──POST /api/v1/projects/{id}/sandbox-token──▶ Full-API   (checks the user may open the project, signs a 2-minute token)
@@ -44,7 +58,7 @@ It only works in the browser of the computer that runs it (Chrome/Edge/Firefox; 
 Projects run in containers, but without the server firewall: for demos with your own projects, not for strangers.
 
 ## 1. Server requirements
-Linux VPS (≥ 4 vCPU / 8 GB RAM and ~30 GB disk for ~4 parallel sessions — Java, Kotlin, Gradle, Rust and .NET need more than the old
+Linux VPS (≥ 4 vCPU / 8 GB RAM and ~40 GB disk for ~4 parallel sessions — Java, Kotlin, Gradle, Rust and .NET need more than the old
 1 GB per session, so `SANDBOX_MEMORY` now defaults to `2g`; compiled languages and the first dependency download are slow), Docker, Node ≥ 20, a domain with wildcard DNS.
 Optional but recommended: [gVisor](https://gvisor.dev) (`SANDBOX_RUNTIME=runsc`) for stronger isolation.
 
@@ -52,7 +66,7 @@ Optional but recommended: [gVisor](https://gvisor.dev) (`SANDBOX_RUNTIME=runsc`)
 ```bash
 git clone <this repo> /opt/uip-sandbox && cd /opt/uip-sandbox
 npm ci --omit=dev
-docker build -t uip-sandbox:latest image/        # PHP, Node, Python, Java, C/C++, Go, Rust, .NET, Ruby, … (~6-8 GB, build once)
+docker build -t uip-sandbox:latest image/        # PHP, Node, Python, Java, C/C++, Go, Rust, .NET, Ruby, … (~9-11 GB, build once — every language of the table above)
 sudo ./deploy/egress-firewall.sh                 # block private networks / metadata for sandbox containers (re-run after reboot)
 cp .env.example .env && nano .env                # SANDBOX_JWT_SECRET (openssl rand -hex 32), ALLOWED_ORIGINS, PREVIEW_DOMAIN
 sudo cp deploy/uip-sandbox.service /etc/systemd/system/ && sudo systemctl enable --now uip-sandbox

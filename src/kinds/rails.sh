@@ -1,5 +1,6 @@
 echo "▶ Ruby project"
 need ruby; need bundle
+[ -f Gemfile ] || { echo "✗ not a Rails/Rack app (no Gemfile) — run a script with: ruby file.rb"; exit 1; }
 bundle config set --local path "$HOME/bundle" >/dev/null
 echo "▶ bundle install… (first run, can take a few minutes)"
 bundle install --jobs 4 || { echo "✗ bundle install failed"; exit 1; }

@@ -1,6 +1,6 @@
 echo "▶ Maven project"
 need mvn; need java
-export MAVEN_OPTS="-Xmx512m"
+export MAVEN_OPTS="${MAVEN_OPTS:+$MAVEN_OPTS }-Xmx512m -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xshare:auto"
 if grep -Eq 'spring-boot-maven-plugin|spring-boot-starter-parent' pom.xml; then
   echo "▶ mvn spring-boot:run (Spring Boot, port 8080 — first run downloads dependencies)"
   exec mvn -B -ntp spring-boot:run

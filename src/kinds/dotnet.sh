@@ -10,4 +10,5 @@ if [ -z "$P" ] || [ ! -f "$P" ]; then
 fi
 [ -n "$P" ] || { echo "✗ no .csproj found"; exit 1; }
 echo "▶ dotnet run --project $P (first run restores NuGet packages)"
-exec dotnet run --project "$P" --no-launch-profile
+export DOTNET_TieredPGO=0 DOTNET_TC_QuickJitForLoops=1 DOTNET_ReadyToRun=1 NUGET_XMLDOC_MODE=skip
+exec dotnet run --project "$P" --no-launch-profile -p:NuGetAudit=false -p:UseSharedCompilation=true -v q

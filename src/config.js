@@ -16,7 +16,7 @@ export const cfg = {
   image: String(env.SANDBOX_IMAGE || 'uip-sandbox:latest'),
   network: String(env.SANDBOX_NETWORK || 'uip-sandbox'),
   runtime: String(env.SANDBOX_RUNTIME || ''), // e.g. "runsc" (gVisor) for stronger isolation
-  cpus: String(env.SANDBOX_CPUS || '1'),
+  cpus: String(env.SANDBOX_CPUS || '2'), // a cap, not a reservation: a compile can use 2 cores while other sessions are idle
   memory: String(env.SANDBOX_MEMORY || '2g'),
   pids: int('SANDBOX_PIDS', 512),
 

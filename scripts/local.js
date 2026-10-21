@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One-command local run (demo on your own computer):  npm run local
 //  - needs Docker (Docker Desktop on Windows/macOS) and Node >= 20
-//  - builds the sandbox image on the first run (a few minutes, ~1.5 GB)
+//  - builds the sandbox image on the first run (and again whenever image/Dockerfile gets a new rev) — several GB
 //  - creates .env.local with a random SANDBOX_JWT_SECRET (printed so you can copy it to Full-API)
 //  - starts the gateway on http://localhost:8787 (previews at http://<id>.localhost:8787)
 import { spawn, spawnSync } from 'node:child_process';
@@ -55,11 +55,14 @@ if (!env.SANDBOX_JWT_SECRET || env.SANDBOX_JWT_SECRET.length < 32) {
 }
 
 // image
-const IMAGE_REV = '2'; // bump when image/Dockerfile changes (rev 2 = PHP 8.4): an older local image is rebuilt automatically
+// The revision comes from the Dockerfile itself (LABEL uip.sandbox.rev), so it can never get out of step with it again:
+// an older local image (e.g. one built before .NET / the new languages were added) is detected and rebuilt automatically.
+const IMAGE_REV = /LABEL\s+uip\.sandbox\.rev="([^"]+)"/.exec(readFileSync(join(root, 'image', 'Dockerfile'), 'utf8'))?.[1] ?? '0';
 const have = docker(['image', 'inspect', '--format', '{{ index .Config.Labels "uip.sandbox.rev" }}', IMAGE]);
-if (have.status === 0 && have.stdout.trim() !== IMAGE_REV) console.log('The sandbox image is out of date (new PHP version) — rebuilding it…');
-if (have.status !== 0 || have.stdout.trim() !== IMAGE_REV) {
-  console.log('Building the sandbox image (first run only — this takes a few minutes)…');
+const haveRev = have.status === 0 ? have.stdout.trim() : null;
+if (haveRev !== null && haveRev !== IMAGE_REV) console.log(`The sandbox image is out of date (rev ${haveRev || 'none'}, need ${IMAGE_REV}) — rebuilding it with all the languages…`);
+if (haveRev !== IMAGE_REV) {
+  console.log('Building the sandbox image (first run only — this takes a while, the image is several GB)…');
   const b = spawnSync('docker', ['build', '-t', IMAGE, join(root, 'image')], { stdio: 'inherit' });
   if (b.status !== 0) die('Image build failed.');
 }

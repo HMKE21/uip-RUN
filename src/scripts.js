@@ -13,7 +13,7 @@ const read = (f) => readFileSync(fileURLToPath(new URL(f, dir)), 'utf8').replace
 /**
  * kind → what it runs
  *   laravel · node · python · static · shell                      (original kinds)
- *   lang    — ONE source file (entry) in any supported language: js ts py php java c cpp cs go rs rb pl lua r jl sh kt dart hs f90 pas sql
+ *   lang    — ONE source file (entry) in any supported language: js ts py php java kt scala groovy clj c cpp cs fs vb go rs zig nim d adb cob asm rb pl raku lua r jl m sh ps1 dart hs ml ex erl lisp scm rkt pro tcl awk f90 pas v vhd sql
  *   maven · gradle · dotnet · go · cargo · rails · php · make     (whole projects, built and started with their own tool)
  *   auto    — look at the files and pick (entry given → lang)
  */
@@ -47,8 +47,10 @@ function body(kind, ctx) {
   const { entry, previewUrl, previewDomain, https } = ctx;
   if (kind === 'auto') {
     if (entry) return body('lang', ctx);
-    const branches = AUTO.map(([test, k]) => `if ${test}; then exec bash -c ${shq(`${PRELUDE}\n${body(k, { ...ctx, entry: '' })}`)}; fi`);
-    return `${branches.join('\n')}\necho "✗ could not tell what this project is — open a file and press Run on it, or use the terminal below."\nexit 1`;
+    // The prelude is written to a file ONCE and every branch sources it. Repeating it in each branch made the script > 128 KB,
+    // which is more than a single `bash -c` argument may be ("Argument list too long").
+    const branches = AUTO.map(([test, k]) => `if ${test}; then exec bash -c ${shq(`. "$HOME/.uip-prelude.sh"\n${body(k, { ...ctx, entry: '' })}`)}; fi`);
+    return `mkdir -p "$HOME"; cat > "$HOME/.uip-prelude.sh" <<'UIP_PRELUDE_EOF'\n${PRELUDE}\nUIP_PRELUDE_EOF\n${branches.join('\n')}\necho "✗ could not tell what this project is — open a file and press Run on it, or use the terminal below."\nexit 1`;
   }
   return SOURCES[kind]
     .replaceAll('@ENTRY@', () => shq(entry))

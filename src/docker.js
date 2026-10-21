@@ -2,6 +2,8 @@
 // (arguments are always passed as an array — never through a shell).
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { cfg, PREVIEW_PORTS, PROJECT_DIR } from './config.js';
 import { parseListening } from './proc.js';
@@ -111,4 +113,10 @@ export async function ensureReady() {
   await docker(['version', '--format', '{{.Server.Version}}'], { timeout: 10_000 });
   try { await docker(['image', 'inspect', cfg.image]); } catch { throw new Error(`Image ${cfg.image} not found — build it: docker build -t ${cfg.image} image/`); }
   try { await docker(['network', 'inspect', cfg.network]); } catch { await docker(['network', 'create', cfg.network]); }
+  // an image built from an older Dockerfile lacks languages ("'dotnet' is not installed in this sandbox image") — say so at start-up
+  try {
+    const want = /LABEL\s+uip\.sandbox\.rev="([^"]+)"/.exec(readFileSync(fileURLToPath(new URL('../image/Dockerfile', import.meta.url)), 'utf8'))?.[1];
+    const { stdout } = await docker(['image', 'inspect', '--format', '{{ index .Config.Labels "uip.sandbox.rev" }}', cfg.image]);
+    if (want && stdout.trim() !== want) console.warn(`⚠ ${cfg.image} is rev "${stdout.trim() || 'none'}" but image/Dockerfile is rev "${want}": some languages will be missing. Rebuild: docker build -t ${cfg.image} image/`);
+  } catch { /* the check is only advice */ }
 }
