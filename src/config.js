@@ -26,7 +26,7 @@ export const cfg = {
   detachedMs: int('DETACHED_MIN', 10) * 60_000,   // browser closed or reloaded: how long the sandbox waits for a reconnect
   // per-user persistent cache volume (npm / composer / pip caches + node_modules / vendor snapshots): repeated runs skip the install
   userCache: env.USER_CACHE !== '0',
-  cacheMaxMb: int('USER_CACHE_MAX_MB', 2048),
+  cacheMaxMb: int('USER_CACHE_MAX_MB', 4096),
   maxZipBytes: int('MAX_ZIP_MB', 60) * 1024 * 1024,
 };
 

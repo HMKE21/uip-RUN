@@ -7,6 +7,7 @@ export const ALLOWED_PARENTS = [
 
 // Pinned third-party assets (pinned versions + SRI where the browser lets us check it).
 export const ESBUILD_WASM_URL = 'https://cdn.jsdelivr.net/npm/esbuild-wasm@0.28.1/esbuild.wasm';
+export const ESBUILD_WASM_FALLBACK_URL = 'https://unpkg.com/esbuild-wasm@0.28.1/esbuild.wasm'; // same npm file => same SRI
 export const ESBUILD_WASM_SRI = 'sha384-rec1r0J9Ufis2IHYieHkK7GfXQzesTCl9szFFpvr6cJ8ZZsVRQzqKFX/KGGqqJNj';
 export const PYODIDE_BASE = 'https://cdn.jsdelivr.net/pyodide/v0.29.5/full/';
 

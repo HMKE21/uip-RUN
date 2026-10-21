@@ -2,7 +2,7 @@
 // Protocol (postMessage, parent <-> this page):
 //   parent -> runner : {uip:'hello'} | {uip:'run', id, kind:'web'|'python', files, root, entry, stdin} | {uip:'stop'}
 //   runner -> parent : {uip:true, type:'ready'|'status'|'log'|'done', id, ...}
-import { ALLOWED_PARENTS, ESBUILD_WASM_URL, ESBUILD_WASM_SRI, PYTHON_TIMEOUT_MS, PYTHON_BOOT_TIMEOUT_MS, RUN_HARD_CAP_MS } from './config.js';
+import { ALLOWED_PARENTS, ESBUILD_WASM_URL, ESBUILD_WASM_FALLBACK_URL, ESBUILD_WASM_SRI, PYTHON_TIMEOUT_MS, PYTHON_BOOT_TIMEOUT_MS, RUN_HARD_CAP_MS } from './config.js';
 import { buildWeb } from './lib/buildWeb.js';
 
 const stage = document.getElementById('stage');
@@ -66,11 +66,24 @@ function stop(reason) {
   if (reason) { log(c.id, 'system', reason); status(c.id, 'stopped'); }
 }
 
+function loadEsbuildScriptFallback() { // jsDelivr blocked/failed -> same pinned file from unpkg (same SRI)
+  return new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/esbuild-wasm@0.28.1/lib/browser.min.js';
+    s.integrity = 'sha384-hX21+UFaeTI9BWzeseCESneXVjRq3EAjRdR0XiJILyEp8GZkR8SNpaonFgkLdEN2'; s.crossOrigin = 'anonymous';
+    s.onload = () => resolve(); s.onerror = () => resolve();
+    document.head.appendChild(s);
+  });
+}
+
 function ensureEsbuild() {
   if (!esbuildReady) {
     esbuildReady = (async () => {
+      if (!window.esbuild) await loadEsbuildScriptFallback();
       if (!window.esbuild) throw new Error('esbuild-wasm failed to load (blocked network?).');
-      const wasmModule = await WebAssembly.compileStreaming(fetch(ESBUILD_WASM_URL, { integrity: ESBUILD_WASM_SRI, credentials: 'omit' }));
+      const getWasm = (url) => WebAssembly.compileStreaming(fetch(url, { integrity: ESBUILD_WASM_SRI, credentials: 'omit' }));
+      let wasmModule;
+      try { wasmModule = await getWasm(ESBUILD_WASM_URL); } catch { wasmModule = await getWasm(ESBUILD_WASM_FALLBACK_URL); }
       await window.esbuild.initialize({ wasmModule, worker: true });
       return window.esbuild;
     })().catch((e) => { esbuildReady = null; throw e; });

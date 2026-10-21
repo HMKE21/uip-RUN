@@ -87,5 +87,6 @@ test('without a cache volume the node script still installs normally', () => {
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }; delete env.UIP_PCACHE;
   const out = execFileSync('bash', ['-c', script], { env }).toString();
   assert.match(out, /npm install/);
-  assert.doesNotMatch(out, /cache/);
+  assert.match(out, /persistent cache is not available/); // visible warning instead of a silent skip
+  assert.doesNotMatch(out, /restored from your cache|saved to your cache/);
 });

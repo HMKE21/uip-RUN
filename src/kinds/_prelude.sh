@@ -47,9 +47,10 @@ uip_restore() { # <dir> <tag> <manifest files…>
 }
 uip_save() { # <dir> <tag> <manifest files…>
   local dir="$1" tag="$2"; shift 2
-  [ -n "$UIP_PCACHE" ] && [ -w "$UIP_PCACHE" ] && [ -d "$dir" ] || return 0
+  if [ -z "$UIP_PCACHE" ] || [ ! -w "$UIP_PCACHE" ]; then echo "⚠ persistent cache is not available - $dir will be reinstalled on every run (check USER_CACHE / Docker provider)"; return 0; fi
+  [ -d "$dir" ] || return 0
   local mb; mb=$(du -sm "$dir" 2>/dev/null | cut -f1)
-  [ "${mb:-99999}" -le "${UIP_SNAP_MAX_MB:-700}" ] || return 0
+  [ "${mb:-99999}" -le "${UIP_SNAP_MAX_MB:-1500}" ] || { echo "⚠ $dir is ${mb}MB (limit ${UIP_SNAP_MAX_MB:-1500}MB) - not cached, every run will reinstall. Raise UIP_SNAP_MAX_MB."; return 0; }
   mkdir -p "$UIP_PCACHE/snap"
   local f; f="$UIP_PCACHE/snap/$tag-$(uip_hash "$@").tar"
   if tar -cf "$f.tmp" "$dir" 2>/dev/null && mv -f "$f.tmp" "$f"; then echo "▶ $dir saved to your cache — the next run starts much faster"; else rm -f "$f.tmp"; fi

@@ -167,7 +167,11 @@ function proxyHttp(sid, req, res) {
     res.writeHead(ur.statusCode || 502, h);
     ur.pipe(res);
   });
-  up.on('error', () => { if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' }); res.end('The app in the sandbox is not responding.'); });
+  up.on('error', () => {
+    // Nothing is listening (yet / any more): the app is still booting or crashed. Answer with a self-refreshing page, not a bare 502.
+    if (!res.headersSent) res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '2', 'cache-control': 'no-store', 'content-security-policy': frameAncestors() });
+    res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2"><body style="font:14px system-ui;color:#555;display:grid;place-items:center;height:100vh;margin:0">The app is not responding yet — it may still be starting or it stopped. Check the terminal for errors. Retrying…</body>');
+  });
   req.pipe(up);
 }
 
