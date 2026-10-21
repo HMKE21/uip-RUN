@@ -6,7 +6,7 @@
 # C / C++ (gcc, g++, make, cmake, gdb)                            Go · Rust (cargo) · Zig · Nim · D · Ada · COBOL · NASM / GNU assembler
 # .NET 8 (C#, F#, VB.NET, PowerShell)                             Ruby (+Rails) · Lua · Perl · Raku · R · Julia · Octave (MATLAB) · Dart
 # Haskell · OCaml · Elixir · Erlang · Common Lisp · Scheme (Guile) · Racket · Prolog · Tcl · AWK
-# Fortran · Pascal · Verilog (iverilog) · VHDL (ghdl) · SQLite
+# Fortran · Pascal · Verilog (iverilog) · VHDL (ghdl) · SQL on SQLite / MariaDB (MySQL) / PostgreSQL
 #
 # Missing something? Add a line below and rebuild. Too big for your server? Delete the blocks you don't need —
 # a run whose toolchain is missing prints "'xyz' is not installed in this sandbox image" instead of failing mysteriously.
@@ -15,7 +15,7 @@
 # Bump the rev label below whenever you change this file: scripts/local.js reads it and rebuilds an older local image by itself.
 # 8.4 because current Laravel lock files pull Symfony 8 / brick/math 0.18, which require PHP >= 8.4.
 FROM php:8.4-cli-bookworm
-LABEL uip.sandbox.rev="4"
+LABEL uip.sandbox.rev="5"
 
 # PHP extensions Laravel projects usually need (sqlite is the default DB inside the sandbox, MariaDB is there for mysql projects)
 ADD https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
@@ -71,7 +71,7 @@ RUN curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSIO
 # ── more languages ───────────────────────────────────────────────────────────────────────────────────────────────────
 # Debian packages. If one name is unavailable on your mirror the others are still installed (one by one).
 RUN set -e; apt-get update; \
-    PKGS="nim ldc gnat gnucobol3 nasm elixir erlang-base ocaml-nox ocaml-findlib sbcl guile-3.0 racket swi-prolog-nox tcl gawk rakudo iverilog ghdl-mcode octave clojure"; \
+    PKGS="nim ldc gnat gnucobol3 nasm elixir erlang-base ocaml-nox ocaml-findlib sbcl guile-3.0 racket swi-prolog-nox tcl gawk rakudo iverilog ghdl-mcode octave clojure postgresql postgresql-client"; \
     apt-get install -y --no-install-recommends $PKGS || { for p in $PKGS; do apt-get install -y --no-install-recommends $p || echo "⚠ skipped $p"; done; }; \
     rm -rf /var/lib/apt/lists/*
 

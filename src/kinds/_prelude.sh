@@ -29,6 +29,26 @@ start_mysql() {
   echo "✓ MariaDB ready — host 127.0.0.1, port 3306, user root (no password), database app"
 }
 
+# a throw-away PostgreSQL server on 127.0.0.1:5432, user postgres without password (trust), database "app"
+start_pg() {
+  local PB; PB=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1)
+  [ -n "$PB" ] || { echo "⚠ PostgreSQL is not installed in this sandbox image"; return 1; }
+  local D="$HOME/pg-data" S="$HOME/pg-sock"
+  mkdir -p "$S"
+  if [ ! -f "$D/PG_VERSION" ]; then
+    echo "▶ initialising PostgreSQL (first run)…"
+    "$PB/initdb" -D "$D" -U postgres --auth=trust -E UTF8 >"$HOME/pg-init.log" 2>&1 || { echo "✗ could not initialise PostgreSQL (see $HOME/pg-init.log)"; return 1; }
+  fi
+  if ! "$PB/pg_isready" -q -h 127.0.0.1 -p 5432; then
+    echo "▶ starting PostgreSQL on 127.0.0.1:5432…"
+    "$PB/pg_ctl" -D "$D" -l "$HOME/pg.log" -w -t 60 \
+      -o "-c listen_addresses=127.0.0.1 -c port=5432 -c unix_socket_directories=$S -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c shared_buffers=64MB" start >/dev/null 2>&1 \
+      || { echo "✗ PostgreSQL did not start (see $HOME/pg.log)"; return 1; }
+  fi
+  "$PB/psql" -h 127.0.0.1 -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='app'" | grep -q 1 || "$PB/createdb" -h 127.0.0.1 -U postgres app || return 1
+  echo "✓ PostgreSQL ready — host 127.0.0.1, port 5432, user postgres (no password), database app"
+}
+
 # ── per-user persistent cache (a Docker volume the gateway mounts at $UIP_PCACHE) ─────────────────────────────────
 # The IDE uploads the project WITHOUT node_modules / vendor, so every run used to download and install everything again.
 # uip_save keeps a tar of the installed folder keyed by a hash of the manifest files; uip_restore unpacks it next time

@@ -150,3 +150,20 @@ test('a missing toolchain for the new languages is reported by name', () => {
   if (!has('zig')) assert.match(run({ entry: 'a.zig', files: { 'a.zig': 'pub fn main() void {}' } }), /'zig' is not installed in this sandbox image/);
   if (!has('scalac')) assert.match(run({ entry: 'a.scala', files: { 'a.scala': '@main def run() = println(1)' } }), /'scalac' is not installed/);
 });
+
+// ── SQL: SQLite by default, MariaDB / PostgreSQL by file name or a "-- engine:" comment ──
+const unpriv = typeof process.getuid === 'function' && process.getuid() !== 0; // MariaDB / PostgreSQL refuse to run as root
+test('sql: SQLite by default', needs(['sqlite3'], () => {
+  assert.match(run({ entry: 'a.sql', files: { 'a.sql': 'CREATE TABLE t(n TEXT); INSERT INTO t VALUES ("x1"); SELECT * FROM t;' } }), /x1/);
+}));
+test('sql: a T-SQL script gets a clear warning', needs(['sqlite3'], () => {
+  assert.match(run({ entry: 'a.sql', files: { 'a.sql': 'DECLARE @x INT = 1;\nSELECT 1;' } }), /looks like T-SQL/);
+}));
+test('sql: "-- engine: mysql" runs on MariaDB', needs(['mariadbd', 'mariadb'], (t) => {
+  if (!unpriv) return t.skip('MariaDB will not run as root');
+  assert.match(run({ entry: 'a.sql', files: { 'a.sql': '-- engine: mysql\nCREATE TABLE t(id INT AUTO_INCREMENT PRIMARY KEY, n VARCHAR(9));\nINSERT INTO t(n) VALUES ("my1");\nSELECT * FROM t;' } }), /my1/);
+}));
+test('sql: a.pg.sql runs on PostgreSQL', needs(['psql'], (t) => {
+  if (!unpriv || !has('ls /usr/lib/postgresql/*/bin/initdb')) return t.skip('needs PostgreSQL and a non-root user');
+  assert.match(run({ entry: 'a.pg.sql', files: { 'a.pg.sql': "CREATE TABLE t(id SERIAL PRIMARY KEY, n TEXT);\nINSERT INTO t(n) VALUES ('pg1');\nSELECT * FROM t;" } }), /pg1/);
+}));

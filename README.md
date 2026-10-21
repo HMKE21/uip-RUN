@@ -5,7 +5,7 @@ project** — and gives the IDE a real terminal (xterm.js) plus a live preview.
 
 | `kind` | what it runs |
 |---|---|
-| `lang` + `entry` | one file, **~60 file types / 45+ languages**: JavaScript (browser-style `prompt/alert` work in the terminal) · TypeScript · Python · PHP · Ruby · Perl · Raku · Lua · R · Julia · MATLAB/Octave · Bash · PowerShell · Tcl · AWK · SQL (SQLite) · Java · Kotlin · Scala · Groovy · Clojure · C · C++ · C# · F# · VB.NET · Go · Rust · Zig · Nim · D · Ada · COBOL · Assembly (NASM / GNU) · Fortran · Pascal · Dart · Haskell · OCaml · Elixir · Erlang · Common Lisp · Scheme · Racket · Prolog · Verilog · VHDL |
+| `lang` + `entry` | one file, **~60 file types / 45+ languages**: JavaScript (browser-style `prompt/alert` work in the terminal) · TypeScript · Python · PHP · Ruby · Perl · Raku · Lua · R · Julia · MATLAB/Octave · Bash · PowerShell · Tcl · AWK · SQL (SQLite, MariaDB/MySQL or PostgreSQL) · Java · Kotlin · Scala · Groovy · Clojure · C · C++ · C# · F# · VB.NET · Go · Rust · Zig · Nim · D · Ada · COBOL · Assembly (NASM / GNU) · Fortran · Pascal · Dart · Haskell · OCaml · Elixir · Erlang · Common Lisp · Scheme · Racket · Prolog · Verilog · VHDL |
 | `laravel` | `composer install` → build assets → **SQLite or a real MariaDB** (when `.env` says `mysql`) → `migrate` → `php -S` |
 | `node` | `npm install` → Vite / Next / Nuxt / Angular dev server, `npm start`, or plain `node` |
 | `python` | `pip install -r requirements.txt` → script, Django `runserver`, Flask, FastAPI (`uvicorn`) |

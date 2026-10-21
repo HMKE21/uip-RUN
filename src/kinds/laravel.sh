@@ -2,11 +2,14 @@ echo "▶ Laravel project"
 [ -f .env ] || { [ -f .env.example ] && cp .env.example .env; } || touch .env
 mkdir -p database storage/framework/{cache/data,sessions,views} storage/logs bootstrap/cache
 export APP_ENV=local APP_DEBUG=true APP_URL=@PREVIEW_URL@ ASSET_URL=@PREVIEW_URL@
-# MySQL / MariaDB projects get a real MariaDB inside the sandbox; everything else uses SQLite
+# MySQL / MariaDB projects get a real MariaDB inside the sandbox, PostgreSQL projects a real PostgreSQL; everything else uses SQLite
 DBC=$(grep -E '^DB_CONNECTION=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"\r ')
 if { [ "$DBC" = mysql ] || [ "$DBC" = mariadb ]; } && start_mysql; then
   export DB_CONNECTION="$DBC" DB_HOST=127.0.0.1 DB_PORT=3306 DB_DATABASE=app DB_USERNAME=root DB_PASSWORD=
+elif { [ "$DBC" = pgsql ] || [ "$DBC" = postgres ]; } && start_pg; then
+  export DB_CONNECTION=pgsql DB_HOST=127.0.0.1 DB_PORT=5432 DB_DATABASE=app DB_USERNAME=postgres DB_PASSWORD=
 else
+  [ "$DBC" = sqlsrv ] && echo "⚠ Microsoft SQL Server is not available in the sandbox — using SQLite instead (migrations written with Laravel's schema builder run unchanged)"
   touch database/database.sqlite
   export DB_CONNECTION=sqlite DB_DATABASE="$PWD/database/database.sqlite"
 fi

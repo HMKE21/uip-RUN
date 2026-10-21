@@ -96,8 +96,31 @@ case "${E,,}" in
   *.m)
     need octave-cli; echo "▶ octave $E   (MATLAB / Octave)"; exec octave-cli --quiet "$E" ;;
   *.sql)
-    need sqlite3; echo "▶ sqlite3 (database kept in $HOME/uip.db for this session)"
-    sqlite3 -header -column "$HOME/uip.db" < "$E"; exit $? ;;
+    # engine: from the file name (a.mysql.sql, a.pg.sql, a.sqlite.sql) or a first-lines comment  "-- engine: mysql | postgres | sqlite"; default SQLite
+    ENG=sqlite; LB="${E,,}"
+    case "$LB" in
+      *.mysql.sql|*.mariadb.sql) ENG=mysql ;;
+      *.pg.sql|*.pgsql.sql|*.psql.sql|*.postgres.sql|*.postgresql.sql) ENG=postgres ;;
+      *.sqlite.sql) ENG=sqlite ;;
+      *) H=$(head -n 5 "$E" | tr 'A-Z' 'a-z' | sed -n 's/^[[:space:]]*--[[:space:]]*\(engine\|db\|database\|dialect\)[[:space:]]*[:=][[:space:]]*\([a-z]*\).*/\2/p' | head -1)
+         case "$H" in mysql|mariadb) ENG=mysql ;; postgres|postgresql|pgsql|pg|psql) ENG=postgres ;; esac ;;
+    esac
+    if [ "$ENG" = sqlite ] && grep -qiE '^[[:space:]]*GO[[:space:]]*$|DECLARE[[:space:]]+@|SELECT[[:space:]]+TOP[[:space:]]+[0-9(]|N?VARCHAR\(MAX\)|IDENTITY[[:space:]]*\([0-9]' "$E"; then
+      echo "⚠ this looks like T-SQL (Microsoft SQL Server). The sandbox runs SQL on SQLite, MariaDB (MySQL) or PostgreSQL — T-SQL-only syntax will fail."
+    fi
+    case "$ENG" in
+      mysql)
+        need mariadb; start_mysql || exit 1
+        echo "▶ MariaDB/MySQL: $B   (open a client afterwards with:  mariadb --no-defaults -uroot --socket=\$HOME/mysql.sock app)"
+        mariadb --no-defaults -uroot --socket="$HOME/mysql.sock" --default-character-set=utf8mb4 --table app < "$E"; exit $? ;;
+      postgres)
+        need psql; start_pg || exit 1
+        echo "▶ PostgreSQL: $B   (open a client afterwards with:  psql -h 127.0.0.1 -U postgres app)"
+        psql -h 127.0.0.1 -U postgres -d app -v ON_ERROR_STOP=1 -f "$E"; exit $? ;;
+      *)
+        need sqlite3; echo "▶ SQLite: $B   (database kept in $HOME/uip.db for this session — use  -- engine: mysql  or  -- engine: postgres  on the first line, or name the file x.mysql.sql / x.pg.sql, for the other engines)"
+        sqlite3 -header -column "$HOME/uip.db" < "$E"; exit $? ;;
+    esac ;;
 
   # ───────────── JVM ─────────────
   *.java)
