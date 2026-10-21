@@ -150,3 +150,48 @@ test('confirm() understands y/yes/نعم; after load prompt()/confirm() return n
   vm.runInContext(`globalThis.r = [prompt('x'), confirm('y')]`, late.ctx);
   assert.deepEqual(JSON.parse(JSON.stringify(late.ctx.r)), [null, false]);
 });
+
+// ---- links inside the preview must never navigate the frame (srcdoc base = the runner site -> "refused to connect") ------
+function clickOn(ctx, listeners, a, extra = {}) {
+  const e = { target: a, defaultPrevented: false, button: 0, preventDefault() { this.defaultPrevented = true; }, ...extra };
+  (listeners.click || []).forEach((f) => f(e));
+  return e;
+}
+const anchor = (href, attrs = {}) => ({
+  nodeType: 1, tagName: 'A', parentNode: null,
+  hasAttribute: (n) => n === 'href' ? href !== null : n in attrs,
+  getAttribute: (n) => (n === 'href' ? href : attrs[n] ?? null), href: `https://runner.example/${href}`,
+});
+
+test('preview links: #section scrolls inside the page instead of navigating the frame', () => {
+  const { ctx, listeners, msgs } = runShim({}, '');
+  const scrolls = [];
+  ctx.window.scrollTo = (o) => scrolls.push(o);
+  ctx.window.pageYOffset = 100;
+  ctx.document.getElementById = (id) => (id === 'pricing' ? { getBoundingClientRect: () => ({ top: 900 }) } : null);
+  const e = clickOn(ctx, listeners, anchor('#pricing'));
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(scrolls.length, 1);
+  assert.equal(scrolls[0].top, 1000); // 900 + 100 scroll offset (no header in the mock)
+  // "#" and "#top" go to the top; an unknown anchor does nothing, but is still not allowed to navigate
+  assert.equal(clickOn(ctx, listeners, anchor('#')).defaultPrevented, true);
+  assert.equal(scrolls[1].top, 0);
+  assert.equal(clickOn(ctx, listeners, anchor('#nope')).defaultPrevented, true);
+  assert.equal(scrolls.length, 2);
+  assert.deepEqual(msgs, []);
+});
+
+test('preview links: external -> new tab; relative page -> warning; new-tab / mailto / router-handled clicks are left alone', () => {
+  const { ctx, listeners, msgs } = runShim({}, '');
+  const opened = [];
+  ctx.window.open = (u, t) => opened.push([u, t]);
+  assert.equal(clickOn(ctx, listeners, anchor('https://example.com/x')).defaultPrevented, true);
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0][1], '_blank');
+  assert.equal(clickOn(ctx, listeners, anchor('about.html')).defaultPrevented, true);
+  assert.equal(msgs.at(-1).level, 'warn');
+  assert.equal(clickOn(ctx, listeners, anchor('https://example.com', { target: '_blank' })).defaultPrevented, false);
+  assert.equal(clickOn(ctx, listeners, anchor('mailto:a@b.c')).defaultPrevented, false);
+  assert.equal(clickOn(ctx, listeners, anchor('#x'), { defaultPrevented: true }).defaultPrevented, true); // a router already handled it
+  assert.equal(opened.length, 1);
+});
