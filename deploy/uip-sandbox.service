@@ -30,6 +30,9 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
 LimitNOFILE=65536
+# the used-token table (jti.log) lives here and survives restarts: /var/lib/uip-sandbox, owned by the service user, exported as $STATE_DIRECTORY
+StateDirectory=uip-sandbox
+StateDirectoryMode=0700
 ReadWritePaths=/var/run/docker.sock
 
 [Install]

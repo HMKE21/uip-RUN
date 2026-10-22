@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import pty from '@lydell/node-pty';
 import { cfg, PREVIEW_PORTS } from './config.js';
-import { verifyToken } from './auth.js';
+import { verifyToken, initJtiStore, pruneJtiStore } from './auth.js';
 import { buildScript, KINDS } from './scripts.js';
 import { inspectZip } from './zipcheck.js';
 import { hostOnlyCookies } from './proc.js';
@@ -49,6 +49,14 @@ const connsByIp = new Map(); // ip -> open control sockets
 const authFails = new Map(); // ip -> { n, reset }
 const lastStart = new Map(); // userId -> time of the last environment start
 let preAuth = 0;             // sockets that connected but have not authenticated yet
+const previewMisses = new Map(); // ip -> { n, reset }: requests for preview hostnames that do not exist (someone guessing ids)
+const previewBlocked = (ip) => { const f = previewMisses.get(ip); return !!f && Date.now() < f.reset && f.n >= cfg.maxPreviewMissesPerIp; };
+const notePreviewMiss = (ip) => {
+  const f = previewMisses.get(ip);
+  if (!f || Date.now() >= f.reset) previewMisses.set(ip, { n: 1, reset: Date.now() + 60_000 }); else f.n++;
+};
+// Network protection state (docker provider): false = the egress firewall is missing / broken, so NO new environment may start.
+const netGuard = { ok: true, why: '', inconclusive: 0 };
 const ipBlocked = (ip) => { const f = authFails.get(ip); return !!f && Date.now() < f.reset && f.n >= cfg.authFailLimit; };
 const noteAuthFail = (ip) => {
   const f = authFails.get(ip);
@@ -127,6 +135,7 @@ async function pollPorts(s) {
 }
 
 async function startSession(ws, claims, init, zip) {
+  if (!netGuard.ok) { log('session_refused', { user: claims.sub, reason: netGuard.why }); send(ws, { t: 'error', text: 'The sandbox is temporarily unavailable. Please try again later and tell the administrator if it continues.' }); return null; }
   const t0 = Date.now();
   if (t0 - (lastStart.get(claims.sub) || 0) < cfg.sessionCooldownMs) { send(ws, { t: 'error', text: 'Please wait a moment before starting again.' }); return null; }
   lastStart.set(claims.sub, t0);
@@ -168,6 +177,7 @@ setInterval(() => {
     else if (now - s.lastActive > cfg.idleMs) destroy(s, 'idle for too long').catch(() => {});
   }
   for (const [ip, f] of authFails) if (now >= f.reset) authFails.delete(ip);
+  for (const [ip, f] of previewMisses) if (now >= f.reset) previewMisses.delete(ip);
   for (const [u, t] of lastStart) if (now - t > 60_000) lastStart.delete(u);
 }, 10_000).unref();
 
@@ -205,6 +215,14 @@ function previewSid(hostHeader) {
   return /^[a-f0-9]{32}$/.test(label) ? label : null;
 }
 
+/** Who opens the preview link: the first few distinct client IPs per session are logged, so a link that was shared shows up in the log. */
+function noteViewer(s, ip) {
+  s.viewers ??= new Set();
+  if (s.viewers.has(ip) || s.viewers.size >= 20) return;
+  s.viewers.add(ip);
+  log('preview_viewer', { sid: s.sid, user: s.userId, ip, distinct: s.viewers.size });
+}
+
 function upstreamOf(sid) {
   const s = sessions.get(sid);
   if (!s) return {};
@@ -228,11 +246,16 @@ function mapLocation(s, value) {
 
 const frameAncestors = () => `frame-ancestors ${cfg.allowedOrigins.join(' ')}`;
 
+const NOINDEX = 'noindex, nofollow, noarchive'; // a preview link must never end up in a search engine
+
 function proxyHttp(sid, req, res) {
+  const ip = clientIp(req);
+  if (previewBlocked(ip)) { res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '60' }); return res.end('Too many requests.'); }
   const { s, port } = upstreamOf(sid);
-  if (!s) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('This sandbox has ended.'); }
+  if (!s) { notePreviewMiss(ip); res.writeHead(404, { 'content-type': 'text/plain', 'x-robots-tag': NOINDEX }); return res.end('This sandbox has ended.'); }
+  noteViewer(s, ip);
   if (!port) {
-    res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '2', 'cache-control': 'no-store', 'content-security-policy': frameAncestors() });
+    res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '2', 'cache-control': 'no-store', 'x-robots-tag': NOINDEX, 'content-security-policy': frameAncestors() });
     return res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2"><body style="font:14px system-ui;color:#555;display:grid;place-items:center;height:100vh;margin:0">Starting the app… (installing dependencies can take a few minutes — watch the terminal)</body>');
   }
   const headers = {};
@@ -242,6 +265,7 @@ function proxyHttp(sid, req, res) {
     const h = { ...ur.headers };
     delete h['x-frame-options']; // the preview is meant to be framed by the IDE…
     h['content-security-policy'] = [].concat(h['content-security-policy'] || [], frameAncestors()); // …and only by it
+    h['x-robots-tag'] = NOINDEX;
     if (cfg.previewScheme === 'https') h['content-security-policy'].push('upgrade-insecure-requests');
     if (h.location) h.location = mapLocation(s, h.location);
     if (h['set-cookie']) h['set-cookie'] = hostOnlyCookies(h['set-cookie']);
@@ -253,7 +277,7 @@ function proxyHttp(sid, req, res) {
   res.on('close', () => up.destroy());
   up.on('error', () => {
     // Nothing is listening (yet / any more): the app is still booting or crashed. Answer with a self-refreshing page, not a bare 502.
-    if (!res.headersSent) res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '2', 'cache-control': 'no-store', 'content-security-policy': frameAncestors() });
+    if (!res.headersSent) res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '2', 'cache-control': 'no-store', 'x-robots-tag': NOINDEX, 'content-security-policy': frameAncestors() });
     res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2"><body style="font:14px system-ui;color:#555;display:grid;place-items:center;height:100vh;margin:0">The app is not responding yet — it may still be starting or it stopped. Check the terminal for errors. Retrying…</body>');
   });
   req.pipe(up);
@@ -261,8 +285,12 @@ function proxyHttp(sid, req, res) {
 
 function proxyUpgrade(sid, req, socket, head) {
   if (String(req.headers.upgrade || '').toLowerCase() !== 'websocket') return socket.destroy();
+  const ip = clientIp(req);
+  if (previewBlocked(ip)) return socket.destroy();
   const { s, port } = upstreamOf(sid);
+  if (!s) notePreviewMiss(ip);
   if (!s || !port) return socket.destroy();
+  noteViewer(s, ip);
   if ((s.upgrades || 0) >= 100) return socket.destroy(); // at most 100 simultaneous WebSockets into one app
   s.upgrades = (s.upgrades || 0) + 1;
   const up = net.connect(port, '127.0.0.1', () => {
@@ -284,7 +312,7 @@ const server = http.createServer((req, res) => {
     const sid = previewSid(req.headers.host);
     if (sid) return proxyHttp(sid, req, res);
     // no session counts here: this endpoint is reachable from the Internet through the reverse proxy
-    if (req.url === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"ok":true}'); }
+    if (req.url === '/healthz') { res.writeHead(netGuard.ok ? 200 : 503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: netGuard.ok })); }
     res.writeHead(404, { 'content-type': 'text/plain' }); res.end('uip-sandbox');
   } catch { try { res.destroy(); } catch { /* ignore */ } }
 });
@@ -389,12 +417,46 @@ wss.on('connection', (ws, req, claims) => {
 
 setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.terminate(); continue; } ws.isAlive = false; try { ws.ping(); } catch { /* ignore */ } } }, 20_000).unref();
 
+// ---------------------------------------------------------------- network protection (egress firewall) self-test
+const reportNet = (r) => `${r.leaks.length ? `a sandbox could connect to: ${r.leaks.join(', ')}` : ''}${r.errors.length ? `${r.leaks.length ? ' · ' : ''}check could not run: ${r.errors.join(' | ')}` : ''}`;
+
+/** Start-up: refuse to run (exit 1) unless sandboxes provably cannot reach the host / other networks. Afterwards: re-check every 10 minutes. */
+async function guardNetwork() {
+  if (!dk.selfTestFirewall) return; // local provider: no containers, development only
+  if (cfg.allowNoFirewall) {
+    console.warn('⚠ ALLOW_NO_FIREWALL=1: the egress firewall is NOT checked. Student code can reach this machine and its local network. Use it only for your own projects.');
+    return;
+  }
+  const r = await dk.selfTestFirewall();
+  for (const n of r.notes) console.warn(`⚠ ${n}`);
+  if (!r.ok) {
+    console.error(`\n✗ Refusing to start: the sandbox network is NOT isolated (${reportNet(r)}).\n  Linux server: run  sudo ./deploy/egress-firewall.sh  and start again (the systemd unit does this before every start).\n  Docker Desktop (Windows / macOS) has no such firewall — for your own projects only, set ALLOW_NO_FIREWALL=1.\n`);
+    process.exit(1);
+  }
+  console.log('✔ egress firewall verified: sandboxes cannot reach the host or other containers');
+  const timer = setInterval(async () => {
+    const x = await dk.selfTestFirewall();
+    if (x.ok) { if (!netGuard.ok) log('firewall_restored', {}); netGuard.ok = true; netGuard.inconclusive = 0; return; }
+    if (x.leaks.length) { // definitive: the protection is gone. Block new sessions and stop the exposed ones.
+      netGuard.ok = false; netGuard.why = reportNet(x); log('firewall_broken', { detail: netGuard.why });
+      for (const s of [...sessions.values()]) await destroy(s, 'sandbox network protection unavailable');
+    } else if (++netGuard.inconclusive >= 2) { // the check itself kept failing (docker busy?): no new sessions until it passes
+      netGuard.ok = false; netGuard.why = reportNet(x); log('firewall_unverified', { detail: netGuard.why });
+    }
+  }, 10 * 60_000);
+  timer.unref();
+}
+
 // ---------------------------------------------------------------- boot / shutdown
 async function main() {
   if (cfg.jwtSecret.length < 32) { console.error('SANDBOX_JWT_SECRET must be set (≥ 32 characters, same value as in Full-API).'); process.exit(1); }
+  // used-token table on disk: a restart must not make a stolen token usable again
+  const kept = initJtiStore(path.join(cfg.stateDir, 'jti.log'));
+  setInterval(() => { try { pruneJtiStore(); } catch (e) { console.error('jti prune:', e.message); } }, 10 * 60_000).unref();
   await dk.ensureReady();
+  await guardNetwork();
   const removed = await dk.cleanupLeftovers();
-  server.listen(cfg.port, cfg.host, () => console.log(`uip-sandbox listening on ${cfg.host}:${cfg.port} (provider: ${dk.name}, preview: ${cfg.previewScheme}://<id>.${cfg.previewDomain}, removed ${removed} stale containers)`));
+  server.listen(cfg.port, cfg.host, () => console.log(`uip-sandbox listening on ${cfg.host}:${cfg.port} (provider: ${dk.name}, preview: ${cfg.previewScheme}://<id>.${cfg.previewDomain}, removed ${removed} stale containers, ${kept} used tokens restored)`));
 }
 const shutdown = async () => { await Promise.all([...sessions.values()].map((s) => destroy(s, 'gateway restarting'))); process.exit(0); };
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);

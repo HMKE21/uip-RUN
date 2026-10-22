@@ -64,7 +64,7 @@ const haveRev = have.status === 0 ? have.stdout.trim() : null;
 if (haveRev !== null && haveRev !== IMAGE_REV) console.log(`The sandbox image is out of date (rev ${haveRev || 'none'}, need ${IMAGE_REV}) — rebuilding it with all the languages…`);
 if (haveRev !== IMAGE_REV) {
   console.log('Building the sandbox image (first run only — this takes a while, the image is several GB)…');
-  const b = spawnSync('docker', ['build', '-t', IMAGE, join(root, 'image')], { stdio: 'inherit' });
+  const b = spawnSync(process.execPath, [join(root, 'scripts', 'build-image.js')], { stdio: 'inherit' }); // pinned + checksum-verified build
   if (b.status !== 0) die('Image build failed.');
 }
 
@@ -78,7 +78,11 @@ console.log(`
  Keep this window open while you demo. Ctrl+C stops everything.
 ──────────────────────────────────────────────────────────────
 `);
-const child = spawn(process.execPath, [join(root, 'src', 'server.js')], { stdio: 'inherit', env: { ...process.env, ...env, PORT: '8787' } });
+// The gateway refuses to start unless sandboxes provably cannot reach the host / local network. Docker Desktop (Windows / macOS) has
+// no egress firewall, so on those systems this launcher opts out for you — which is why `npm run local` is for YOUR projects only.
+const noFirewall = process.platform !== 'linux' || process.env.ALLOW_NO_FIREWALL === '1';
+if (noFirewall) console.log('⚠ No egress firewall on this system: code run in the sandbox can reach this computer and your local network.\n  Use it for your own projects only — never let other people (students) run code on it.\n');
+const child = spawn(process.execPath, [join(root, 'src', 'server.js')], { stdio: 'inherit', env: { ...process.env, ...env, PORT: '8787', ...(noFirewall ? { ALLOW_NO_FIREWALL: '1' } : {}) } });
 const stop = () => child.kill('SIGINT');
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
 child.on('exit', (c) => process.exit(c ?? 0));

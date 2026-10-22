@@ -10,7 +10,9 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test test/*.test.js",
-    "local": "node scripts/local.js"
+    "local": "node scripts/local.js",
+    "pin-image": "node scripts/pin-image.js",
+    "build-image": "node scripts/build-image.js"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",

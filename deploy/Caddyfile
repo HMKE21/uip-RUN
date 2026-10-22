@@ -1,6 +1,9 @@
 # Caddy in front of the gateway. DNS: A records for sandbox.example.com and *.sbx.example.com -> this server.
 # The wildcard needs the DNS challenge (Caddy build with your DNS provider's module).
 #
+# One WILDCARD certificate (below), never `on_demand_tls` / per-host certificates: those would list every session id in the public
+# certificate-transparency logs, and the preview link is the only thing protecting a preview.
+#
 # IMPORTANT: use a preview domain that is NOT a subdomain of your main site (e.g. example-previews.net, not sbx.example.com):
 # student code runs on <id>.<preview domain> and can set cookies for the parent domain.
 

@@ -1,4 +1,6 @@
 // All settings come from environment variables (see .env.example).
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 const env = process.env;
 const int = (k, d) => { const n = Number(env[k]); return Number.isFinite(n) && n > 0 ? n : d; };
 const list = (k, d) => String(env[k] ?? d).split(',').map((s) => s.trim()).filter(Boolean);
@@ -25,6 +27,13 @@ export const cfg = {
   pids: int('SANDBOX_PIDS', 512),
   // public resolvers: the firewall blocks private ranges, so a sandbox must not depend on the host's DNS
   dns: list('SANDBOX_DNS', '1.1.1.1,8.8.8.8'),
+
+  // where the used-token (jti) table is kept so it survives a restart. systemd's StateDirectory= sets STATE_DIRECTORY.
+  stateDir: String(env.STATE_DIR || env.STATE_DIRECTORY || join(dirname(fileURLToPath(import.meta.url)), '..', '.state')),
+  // The gateway checks at start-up (and every 10 min) that sandboxes really cannot reach the host / private networks, and refuses
+  // to run otherwise. Only set ALLOW_NO_FIREWALL=1 for your own machine (Docker Desktop has no egress firewall) — never for students.
+  allowNoFirewall: env.ALLOW_NO_FIREWALL === '1',
+  maxPreviewMissesPerIp: int('MAX_PREVIEW_MISSES', 30), // unknown preview hostnames per minute per IP before 429 (id guessing)
 
   maxSessions: int('MAX_SESSIONS', 6),
   maxLifeMs: int('MAX_LIFE_MIN', 60) * 60_000,   // hard limit for one session

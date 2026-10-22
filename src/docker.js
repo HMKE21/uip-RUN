@@ -1,8 +1,10 @@
 // Docker provider: one locked-down container per session. Talks to the local Docker daemon through the CLI
 // (arguments are always passed as an array — never through a shell).
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import net from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { cfg, PREVIEW_PORTS, PROJECT_DIR } from './config.js';
@@ -141,9 +143,76 @@ export async function cleanupLeftovers() {
   } catch (e) { console.error('cleanup failed:', e.message); return 0; }
 }
 
+// ---------------------------------------------------------------- egress firewall self-test
+// A bash script that runs INSIDE a throw-away sandbox container (same network, DNS, capabilities and runtime as a student's).
+// $@ = host:port targets. It prints CONTROL-OK when a connection that must succeed does succeed (so "no OPEN lines" can never
+// mean "the probe itself is broken"), OPEN <target> for every target that accepted a connection, NET-OK when the Internet works.
+export const _PROBE = [
+  `python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",55555)); s.listen(5); time.sleep(10)' &`,
+  `sleep 0.7`,
+  `timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/55555' 2>/dev/null && echo CONTROL-OK`,
+  `for t in "$@"; do ( timeout 4 bash -c "exec 3<>/dev/tcp/\${t%:*}/\${t##*:}" 2>/dev/null && echo "OPEN $t" ) & done`,
+  `( timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && echo NET-OK ) &`,
+  `sleep 4.5; kill $(jobs -p) 2>/dev/null; echo DONE`,
+].join('\n');
+
+/**
+ * Proves that a sandbox container really cannot reach (a) the HOST on any of its addresses — checked with a real listener on
+ * 0.0.0.0, so a closed-port RST can't be mistaken for protection — and (b) another container on a different Docker network
+ * (private ranges / lateral movement). Result: { ok, leaks: [..definitive..], errors: [..inconclusive..], notes: [..] }.
+ * `leaks` means the firewall is missing or broken; `errors` means the check itself could not run (treated as NOT ok at start-up).
+ */
+export async function selfTestFirewall() {
+  const res = { ok: false, leaks: [], errors: [], notes: [] };
+  const srv = net.createServer((c) => c.destroy());
+  const targetName = `uip-selftest-${randomBytes(6).toString('hex')}`;
+  try {
+    await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(0, '0.0.0.0', resolve); });
+    const port = srv.address().port;
+
+    const hostIps = new Set();
+    for (const list of Object.values(networkInterfaces())) for (const a of list || []) if ((a.family === 'IPv4' || a.family === 4) && !a.address.startsWith('127.')) hostIps.add(a.address);
+    try {
+      const { stdout } = await docker(['network', 'inspect', cfg.network, '-f', '{{(index .IPAM.Config 0).Gateway}}'], { timeout: 15_000 });
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(stdout.trim())) hostIps.add(stdout.trim());
+    } catch { res.errors.push(`network ${cfg.network} not found`); return res; }
+    const targets = [...hostIps].map((ip) => `${ip}:${port}`);
+
+    // a second container on Docker's default bridge: reaching it from the sandbox network crosses a private range
+    let lateral = null;
+    try {
+      await docker(['run', '-d', '--rm', '--pull', 'never', '--name', targetName, '--label', 'uip.selftest=1', '--network', 'bridge',
+        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '64m', '-u', 'dev',
+        '--entrypoint', 'python3', cfg.image, '-m', 'http.server', '8099', '--bind', '0.0.0.0'], { timeout: 60_000 });
+      for (let i = 0; i < 20 && !lateral; i++) {
+        try { await docker(['exec', targetName, 'python3', '-c', 'import socket; socket.create_connection(("127.0.0.1",8099),1)'], { timeout: 10_000 }); lateral = true; } catch { await new Promise((r) => setTimeout(r, 500)); }
+      }
+      const { stdout } = await docker(['inspect', '-f', '{{.NetworkSettings.IPAddress}}', targetName], { timeout: 15_000 });
+      if (lateral && /^\d+\.\d+\.\d+\.\d+$/.test(stdout.trim())) targets.push(`${stdout.trim()}:8099`); else res.notes.push('could not set up the container-to-container target (that part of the check was skipped)');
+    } catch { res.notes.push('could not start the container-to-container target (that part of the check was skipped)'); }
+
+    const { stdout } = await docker(['run', '--rm', '--pull', 'never', '--network', cfg.network, ...cfg.dns.flatMap((d) => ['--dns', d]),
+      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '64', '--memory', '128m', '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',
+      ...(cfg.runtime ? ['--runtime', cfg.runtime] : []), '-u', 'dev', '--entrypoint', 'bash', cfg.image, '-c', _PROBE, '_', ...targets], { timeout: 90_000 });
+
+    const lines = stdout.split('\n').map((l) => l.trim());
+    if (!lines.includes('CONTROL-OK') || !lines.includes('DONE')) { res.errors.push('the probe container did not run correctly'); return res; }
+    for (const l of lines) if (l.startsWith('OPEN ')) res.leaks.push(l.slice(5));
+    if (!lines.includes('NET-OK')) res.notes.push('sandboxes have no Internet access (npm / Composer / pip will fail)');
+    res.ok = res.leaks.length === 0;
+    return res;
+  } catch (e) {
+    res.errors.push(String(e.stderr || e.message || e).trim().split('\n').filter(Boolean).slice(-2).join(' | '));
+    return res;
+  } finally {
+    srv.close();
+    await docker(['rm', '-f', targetName], { timeout: 30_000 }).catch(() => {});
+  }
+}
+
 export async function ensureReady() {
   await docker(['version', '--format', '{{.Server.Version}}'], { timeout: 10_000 });
-  try { await docker(['image', 'inspect', cfg.image]); } catch { throw new Error(`Image ${cfg.image} not found — build it: docker build -t ${cfg.image} image/`); }
+  try { await docker(['image', 'inspect', cfg.image]); } catch { throw new Error(`Image ${cfg.image} not found — build it: npm run build-image`); }
   // enable_icc=false: containers on this network cannot open connections to each other (enforced by Docker itself)
   try {
     const { stdout } = await docker(['network', 'inspect', cfg.network, '--format', '{{ index .Options "com.docker.network.bridge.enable_icc" }}']);
@@ -153,6 +222,6 @@ export async function ensureReady() {
   try {
     const want = /LABEL\s+uip\.sandbox\.rev="([^"]+)"/.exec(readFileSync(fileURLToPath(new URL('../image/Dockerfile', import.meta.url)), 'utf8'))?.[1];
     const { stdout } = await docker(['image', 'inspect', '--format', '{{ index .Config.Labels "uip.sandbox.rev" }}', cfg.image]);
-    if (want && stdout.trim() !== want) console.warn(`⚠ ${cfg.image} is rev "${stdout.trim() || 'none'}" but image/Dockerfile is rev "${want}": some languages will be missing. Rebuild: docker build -t ${cfg.image} image/`);
+    if (want && stdout.trim() !== want) console.warn(`⚠ ${cfg.image} is rev "${stdout.trim() || 'none'}" but image/Dockerfile is rev "${want}": some languages will be missing. Rebuild: npm run build-image`);
   } catch { /* the check is only advice */ }
 }

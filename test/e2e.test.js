@@ -40,7 +40,7 @@ const waitFor = async (ws, pred, ms = 15000) => {
 };
 
 before(async () => {
-  gw = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), SANDBOX_JWT_SECRET: SECRET, SANDBOX_PROVIDER: 'local', PREVIEW_DOMAIN: `localhost:${PORT}`, ALLOWED_ORIGINS: ORIGIN }, stdio: ['ignore', 'pipe', 'inherit'] });
+  gw = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), SANDBOX_JWT_SECRET: SECRET, SANDBOX_PROVIDER: 'local', STATE_DIR: mkdtempSync(join(tmpdir(), 'e2e-state-')), PREVIEW_DOMAIN: `localhost:${PORT}`, ALLOWED_ORIGINS: ORIGIN }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((resolve, reject) => { gw.stdout.on('data', (d) => { if (String(d).includes('listening')) resolve(); }); gw.on('exit', () => reject(new Error('gateway exited'))); setTimeout(() => reject(new Error('gateway did not start')), 10000); });
 });
 after(() => { gw?.kill('SIGKILL'); });

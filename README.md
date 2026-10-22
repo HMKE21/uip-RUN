@@ -28,7 +28,7 @@ The per-kind scripts are plain bash in `src/kinds/*.sh` — add a language by ad
 
 ### "'xyz' is not installed in this sandbox image"
 Your image was built from an older `image/Dockerfile`. `npm run local` now compares the image's `uip.sandbox.rev` label with the Dockerfile and rebuilds by itself;
-on a server the gateway prints a warning at start-up — rebuild with `docker build -t uip-sandbox:latest image/`.
+on a server the gateway prints a warning at start-up — rebuild with `npm run build-image`.
 
 ```
 Browser (UIP IDE) ──POST /api/v1/projects/{id}/sandbox-token──▶ Full-API   (checks the user may open the project, signs a 2-minute token)
@@ -55,7 +55,7 @@ npm run local          # builds the image on the first run, creates .env.local, 
 Then set `SANDBOX_URL=http://localhost:8787` and the printed `SANDBOX_JWT_SECRET` on Railway. The React app's CSP must allow
 `ws://localhost:8787` (connect-src) and `http://*.localhost:8787` (frame-src) — already included in the overlay.
 It only works in the browser of the computer that runs it (Chrome/Edge/Firefox; Chrome may ask to allow access to local devices — click Allow).
-Projects run in containers, but without the server firewall: for demos with your own projects, not for strangers.
+Projects run in containers, but **without the server firewall** (Docker Desktop on Windows / macOS has none): code run there can reach your computer and local network. For your own projects only — `npm run local` sets `ALLOW_NO_FIREWALL=1` for you on those systems; never let students use it. Real users need the Linux server below.
 
 ## 1. Server requirements
 Linux VPS (≥ 4 vCPU / 8 GB RAM and ~40 GB disk for ~4 parallel sessions — Java, Kotlin, Gradle, Rust and .NET need more than the old
@@ -66,14 +66,26 @@ Optional but recommended: [gVisor](https://gvisor.dev) (`SANDBOX_RUNTIME=runsc`)
 ```bash
 git clone <this repo> /opt/uip-sandbox && cd /opt/uip-sandbox
 npm ci --omit=dev
-docker build -t uip-sandbox:latest image/        # PHP, Node, Python, Java, C/C++, Go, Rust, .NET, Ruby, … (~9-11 GB, build once — every language of the table above)
-sudo ./deploy/egress-firewall.sh                 # block private networks / metadata for sandbox containers (re-run after reboot)
+npm run build-image                              # pins every base image (digest) and download (sha256) in image/pins.env — commit it — then builds (~9-11 GB, build once)
+sudo ./deploy/egress-firewall.sh                 # block private networks / metadata for sandbox containers (the systemd unit re-runs it before every start)
 cp .env.example .env && nano .env                # SANDBOX_JWT_SECRET (openssl rand -hex 32), ALLOWED_ORIGINS, PREVIEW_DOMAIN
 sudo cp deploy/uip-sandbox.service /etc/systemd/system/ && sudo systemctl enable --now uip-sandbox
 ```
 HTTPS: use `deploy/Caddyfile` (needs a Caddy build with your DNS provider module, for the wildcard certificate).
 DNS: `sandbox.example.com` and `*.sbx.example.com` → the server. Use a domain **different from** your main site for the previews
 (student apps can set cookies for the preview domain).
+
+On start the gateway **proves** the firewall works (a throw-away sandbox tries to reach every address of the host and a container on
+another Docker network) and **exits with an error if anything gets through**; it repeats the check every 10 minutes, stops sessions and
+refuses new ones if the protection disappears, and `/healthz` turns 503. Student code is never run without it.
+The used-token table is kept in `$STATE_DIRECTORY` (`/var/lib/uip-sandbox/jti.log`, set up by the unit's `StateDirectory=`), so a restart
+does not make a stolen token usable again.
+
+### Updating the image (Dockerfile)
+Change a version / tag in `image/Dockerfile`, bump `LABEL uip.sandbox.rev`, run `npm run pin-image -- --refresh` and review the diff of
+`image/pins.env`, then `npm run build-image`. A download without a matching checksum, or a changed one, **stops the build**.
+Checksums are compared with the publisher's own (Gradle, Kotlin, Groovy, PowerShell, Zig); Scala 3 publishes none, so its pin is
+trust-on-first-use. Not pinned: Debian packages (apt, signed), `gem` / `npm -g` installs inside the image (latest at build time).
 
 ## 3. Connect Full-API (Railway)
 Add two variables and redeploy:
@@ -96,14 +108,16 @@ The Run dropdown then lists "Laravel", "Node", "Python (Flask/Django)", "React �
 end-to-end run of the gateway with the *local* provider (`SANDBOX_PROVIDER=local`: **no isolation, development only**).
 
 ## Security notes
-* **Token**: HS256, <= 15 min, single use (`jti` mandatory), audience `uip-sandbox`, issuer `uip-api`. Failed logins are rate-limited per IP.
+* **Token**: HS256, <= 15 min, single use (`jti` mandatory, remembered on disk across restarts; if it can't be stored the login is refused), audience `uip-sandbox`, issuer `uip-api`. Failed logins are rate-limited per IP.
 * **WebSocket**: `Origin` checked, token only in the first frame, an unauthenticated socket may send at most 4 KB, connections per IP / unauthenticated sockets capped, text frames <= 64 KB, output back-pressured.
 * **Project zip**: central directory inspected before unpacking (zip-slip, absolute paths, zip bombs, file count, encrypted/zip64).
 * **Container**: `--cap-drop ALL`, `no-new-privileges`, CPU/RAM/PID/file-size limits, IPv6 off, public DNS only, `enable_icc=false` network, no secrets (gateway env never passed on), cache volume named from a 128-bit hash.
 * **Disk**: watchdog stops a session over `SANDBOX_MAX_DISK_MB` and clears an oversized cache. For a hard quota use `SANDBOX_DISK` or a size-limited Docker data-root.
-* **Network**: `deploy/egress-firewall.sh` blocks private ranges, metadata, **and the host on every address**; the systemd unit re-applies it before each start.
-* **Previews**: 128-bit id, framed only by `ALLOWED_ORIGINS`, `Domain=` stripped from cookies, Referrer-Policy `same-origin`. Use a SEPARATE registrable domain.
+* **Network**: `deploy/egress-firewall.sh` blocks private ranges, metadata, **and the host on every address**; the systemd unit re-applies it before each start, and the gateway **verifies it works** at start-up and every 10 min (`ALLOW_NO_FIREWALL=1` skips the check — your own machine only).
+* **Previews**: no login — the link *is* the capability (128-bit random id, dies with the session; **Stop** revokes it). Anyone who has the link sees the preview: don't post it publicly.
+  Hardening: framed only by `ALLOWED_ORIGINS`, `X-Robots-Tag: noindex`, `Domain=` stripped from cookies, Referrer-Policy `same-origin`, an IP that requests unknown ids is blocked for a minute (`MAX_PREVIEW_MISSES`),
+  the first IPs that open each preview are logged (`preview_viewer`). Use ONE wildcard certificate (as in `deploy/Caddyfile`), never per-host certificates — those would publish every session id in the public certificate-transparency logs. Use a SEPARATE registrable domain.
 * **Gateway**: binds 127.0.0.1, systemd-sandboxed. Docker access is root-equivalent on the host: dedicated server, ideally gVisor (`SANDBOX_RUNTIME=runsc`).
 * **Browser runner**: preview iframe has NO `allow-same-origin` / `allow-modals`; storage is in-memory.
 * `SANDBOX_PROVIDER=local` has no isolation and refuses to start in production / with https previews.
-* Known: the image downloads some toolchains without checksums (Dockerfile) — pin and verify for production.
+* **Supply chain**: images by digest, downloads by sha256 (`image/pins.env`), `install-php-extensions` from a pinned image instead of `latest`; the build fails on any mismatch.

@@ -1,5 +1,5 @@
 # Sandbox image: every language / environment a student project may need.
-#   docker build -t uip-sandbox:latest image/        (first build: 20-40 min, image ≈ 9-11 GB — build it once on the server)
+#   npm run build-image      (pins every image / download first, then builds; 20-40 min, image ≈ 9-11 GB — build it once on the server)
 #
 # PHP 8.4 + Composer + MariaDB (Laravel, Symfony, WordPress…)      Node 22 + npm + TypeScript (tsx) + Deno + pnpm/yarn
 # Python 3 (+pip, venv, uv)                                       Java 17 + Maven + Gradle + Kotlin + Scala 3 + Groovy + Clojure
@@ -10,15 +10,45 @@
 #
 # Missing something? Add a line below and rebuild. Too big for your server? Delete the blocks you don't need —
 # a run whose toolchain is missing prints "'xyz' is not installed in this sandbox image" instead of failing mysteriously.
-# The big downloads at the end (Zig, Scala, Groovy, PowerShell) are optional: if one of them cannot be downloaded the build
-# carries on and only that language reports "not installed".
+# The big downloads at the end (Zig, Scala, Groovy, PowerShell) are optional: if one cannot be DOWNLOADED the build carries on and
+# only that language reports "not installed" — but a checksum that does not match stops the whole build.
 # Bump the rev label below whenever you change this file: scripts/local.js reads it and rebuilds an older local image by itself.
 # 8.4 because current Laravel lock files pull Symfony 8 / brick/math 0.18, which require PHP >= 8.4.
-FROM php:8.4-cli-bookworm
-LABEL uip.sandbox.rev="5"
+# ── supply chain ──────────────────────────────────────────────────────────────────────────────────────────────────────
+# Every external image and download is PINNED by `npm run pin-image`, which writes image/pins.env: the content digest of each
+# base image and the sha256 of each downloaded toolchain. `npm run build-image` then builds with PINS_STRICT=1, so a download without
+# a matching checksum, a tampered file or a re-pointed tag fails the build. The defaults below are plain tags (an unpinned build only).
+ARG BASE_IMAGE=php:8.4-cli-bookworm
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG COMPOSER_IMAGE=composer:2
+ARG DENO_IMAGE=denoland/deno:bin
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.5
+ARG GO_IMAGE=golang:1.23-bookworm
+ARG RUST_IMAGE=rust:1-slim-bookworm
+ARG DOTNET_IMAGE=mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim
+ARG JULIA_IMAGE=julia:1.11-bookworm
+ARG DART_IMAGE=dart:stable
+ARG IPE_IMAGE=mlocati/php-extension-installer:latest
+FROM ${NODE_IMAGE} AS src_node
+FROM ${COMPOSER_IMAGE} AS src_composer
+FROM ${DENO_IMAGE} AS src_deno
+FROM ${UV_IMAGE} AS src_uv
+FROM ${GO_IMAGE} AS src_go
+FROM ${RUST_IMAGE} AS src_rust
+FROM ${DOTNET_IMAGE} AS src_dotnet
+FROM ${JULIA_IMAGE} AS src_julia
+FROM ${DART_IMAGE} AS src_dart
+FROM ${IPE_IMAGE} AS src_ipe
+
+FROM ${BASE_IMAGE}
+LABEL uip.sandbox.rev="6"
+# helper scripts (sed: a Windows checkout may have turned the line endings into CRLF)
+COPY fetch-verified.sh /usr/local/bin/fetch-verified
+COPY install-extras.sh /tmp/install-extras.sh
+RUN sed -i 's/\r$//' /usr/local/bin/fetch-verified /tmp/install-extras.sh && chmod 755 /usr/local/bin/fetch-verified
 
 # PHP extensions Laravel projects usually need (sqlite is the default DB inside the sandbox, MariaDB is there for mysql projects)
-ADD https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
+COPY --from=src_ipe /usr/bin/install-php-extensions /usr/local/bin/install-php-extensions
 RUN chmod +x /usr/local/bin/install-php-extensions \
  && install-php-extensions pdo_sqlite pdo_mysql pdo_pgsql mbstring intl gd zip bcmath exif pcntl opcache sockets xsl soap
 
@@ -39,33 +69,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
 
 # Node 22 (copied from the official image) + Composer
-COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=src_node /usr/local/bin/node /usr/local/bin/node
+COPY --from=src_node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
  && npm install -g --no-audit --no-fund typescript tsx pnpm yarn
-COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
-COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+COPY --from=src_composer /usr/bin/composer /usr/local/bin/composer
+COPY --from=src_deno /deno /usr/local/bin/deno
 # uv: Python virtualenv + pip install 10-50x faster than pip (the runner uses it automatically when it is there)
-COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
+COPY --from=src_uv /uv /usr/local/bin/uv
 
 # Go
-COPY --from=golang:1.23-bookworm /usr/local/go /usr/local/go
+COPY --from=src_go /usr/local/go /usr/local/go
 # Rust (cargo + rustc); registry / build output go to the user's home at run time
-COPY --from=rust:1-slim-bookworm /usr/local/cargo /usr/local/cargo
-COPY --from=rust:1-slim-bookworm /usr/local/rustup /usr/local/rustup
+COPY --from=src_rust /usr/local/cargo /usr/local/cargo
+COPY --from=src_rust /usr/local/rustup /usr/local/rustup
 # .NET 8 SDK (console + ASP.NET Core)
-COPY --from=mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim /usr/share/dotnet /usr/share/dotnet
+COPY --from=src_dotnet /usr/share/dotnet /usr/share/dotnet
 # Julia and Dart
-COPY --from=julia:1.11-bookworm /usr/local/julia /usr/local/julia
-COPY --from=dart:stable /usr/lib/dart /usr/lib/dart
+COPY --from=src_julia /usr/local/julia /usr/local/julia
+COPY --from=src_dart /usr/lib/dart /usr/lib/dart
 
 # Gradle and Kotlin (downloaded; bump the versions when you like)
 ARG GRADLE_VERSION=8.10.2
 ARG KOTLIN_VERSION=2.0.21
-RUN curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip \
+ARG GRADLE_SHA256=
+ARG KOTLIN_SHA256=
+ARG PINS_STRICT=0
+RUN fetch-verified "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" /tmp/gradle.zip "$GRADLE_SHA256" \
  && unzip -q /tmp/gradle.zip -d /opt && mv /opt/gradle-${GRADLE_VERSION} /opt/gradle \
- && curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o /tmp/kotlin.zip \
+ && fetch-verified "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" /tmp/kotlin.zip "$KOTLIN_SHA256" \
  && unzip -q /tmp/kotlin.zip -d /opt && rm -f /tmp/gradle.zip /tmp/kotlin.zip
 
 # ── more languages ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -80,13 +113,14 @@ ARG ZIG_VERSION=0.13.0
 ARG SCALA_VERSION=3.3.4
 ARG GROOVY_VERSION=4.0.23
 ARG PWSH_VERSION=7.4.6
-RUN A=$(uname -m); \
-    ( curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${A}-${ZIG_VERSION}.tar.xz" | tar -xJ -C /opt && mv /opt/zig-linux-${A}-${ZIG_VERSION} /opt/zig ) || echo "⚠ Zig not installed"; \
-    ( curl -fsSL "https://github.com/scala/scala3/releases/download/${SCALA_VERSION}/scala3-${SCALA_VERSION}.tar.gz" | tar -xz -C /opt && mv /opt/scala3-${SCALA_VERSION} /opt/scala3 ) || echo "⚠ Scala not installed"; \
-    ( curl -fsSL "https://archive.apache.org/dist/groovy/${GROOVY_VERSION}/distribution/apache-groovy-binary-${GROOVY_VERSION}.zip" -o /tmp/groovy.zip && unzip -q /tmp/groovy.zip -d /opt && mv /opt/groovy-${GROOVY_VERSION} /opt/groovy ) || echo "⚠ Groovy not installed"; \
-    case "$A" in x86_64) PA=x64;; aarch64) PA=arm64;; *) PA=$A;; esac; \
-    ( mkdir -p /opt/pwsh && curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-${PA}.tar.gz" | tar -xz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh ) || { rm -rf /opt/pwsh; echo "⚠ PowerShell not installed"; }; \
-    rm -f /tmp/groovy.zip
+ARG ZIG_SHA256_X86_64=
+ARG ZIG_SHA256_AARCH64=
+ARG SCALA_SHA256=
+ARG GROOVY_SHA256=
+ARG PWSH_SHA256_X86_64=
+ARG PWSH_SHA256_AARCH64=
+ARG PINS_STRICT=0
+RUN bash /tmp/install-extras.sh && rm -f /tmp/install-extras.sh
 
 ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/share/dotnet:/usr/local/julia/bin:/usr/lib/dart/bin:/opt/gradle/bin:/opt/kotlinc/bin:/opt/zig:/opt/scala3/bin:/opt/groovy/bin:/opt/pwsh:${PATH}" \
     RUSTUP_HOME=/usr/local/rustup \
