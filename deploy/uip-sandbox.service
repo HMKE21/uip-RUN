@@ -6,11 +6,31 @@ Requires=docker.service
 [Service]
 WorkingDirectory=/opt/uip-sandbox
 EnvironmentFile=/opt/uip-sandbox/.env
+ExecStartPre=+/opt/uip-sandbox/deploy/egress-firewall.sh
 ExecStart=/usr/bin/node src/server.js
 Restart=always
+RestartSec=3
 User=sandbox
 Group=docker
 NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+LimitNOFILE=65536
+ReadWritePaths=/var/run/docker.sock
 
 [Install]
 WantedBy=multi-user.target

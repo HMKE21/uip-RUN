@@ -96,7 +96,14 @@ The Run dropdown then lists "Laravel", "Node", "Python (Flask/Django)", "React �
 end-to-end run of the gateway with the *local* provider (`SANDBOX_PROVIDER=local`: **no isolation, development only**).
 
 ## Security notes
-* The token is HS256, 2 minutes, single use (`jti`), audience `uip-sandbox`; the WebSocket also checks `Origin`.
-* Preview URLs contain a random 64-bit session id and only work while the session lives; they can only be framed by `ALLOWED_ORIGINS`.
-* The service user needs access to the Docker socket, which is root-equivalent **on that server** — keep it dedicated and patched.
-* No per-container disk quota is set; put Docker's data-root on a size-limited volume (e.g. XFS project quotas) if you expect abuse.
+* **Token**: HS256, <= 15 min, single use (`jti` mandatory), audience `uip-sandbox`, issuer `uip-api`. Failed logins are rate-limited per IP.
+* **WebSocket**: `Origin` checked, token only in the first frame, an unauthenticated socket may send at most 4 KB, connections per IP / unauthenticated sockets capped, text frames <= 64 KB, output back-pressured.
+* **Project zip**: central directory inspected before unpacking (zip-slip, absolute paths, zip bombs, file count, encrypted/zip64).
+* **Container**: `--cap-drop ALL`, `no-new-privileges`, CPU/RAM/PID/file-size limits, IPv6 off, public DNS only, `enable_icc=false` network, no secrets (gateway env never passed on), cache volume named from a 128-bit hash.
+* **Disk**: watchdog stops a session over `SANDBOX_MAX_DISK_MB` and clears an oversized cache. For a hard quota use `SANDBOX_DISK` or a size-limited Docker data-root.
+* **Network**: `deploy/egress-firewall.sh` blocks private ranges, metadata, **and the host on every address**; the systemd unit re-applies it before each start.
+* **Previews**: 128-bit id, framed only by `ALLOWED_ORIGINS`, `Domain=` stripped from cookies, Referrer-Policy `same-origin`. Use a SEPARATE registrable domain.
+* **Gateway**: binds 127.0.0.1, systemd-sandboxed. Docker access is root-equivalent on the host: dedicated server, ideally gVisor (`SANDBOX_RUNTIME=runsc`).
+* **Browser runner**: preview iframe has NO `allow-same-origin` / `allow-modals`; storage is in-memory.
+* `SANDBOX_PROVIDER=local` has no isolation and refuses to start in production / with https previews.
+* Known: the image downloads some toolchains without checksums (Dockerfile) — pin and verify for production.

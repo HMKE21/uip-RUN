@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PREVIEW_PORTS, PROJECT_DIR } from './config.js';
-import { parseListening } from './proc.js';
+import { parseListening, cleanEnv } from './proc.js';
 
 export const name = 'local';
 const root = (sid) => join(tmpdir(), `uip-local-${sid}`);
@@ -22,11 +22,14 @@ export async function listening() {
   try { return parseListening(`${await readFile('/proc/net/tcp', 'utf8')}\n${await readFile('/proc/net/tcp6', 'utf8').catch(() => '')}`); } catch { return []; }
 }
 export function spawnTerminal(pty, sid, { cols, rows }) {
-  const t = pty.spawn('bash', [join(root(sid), 'run.sh')], { name: 'xterm-256color', cols: cols || 100, rows: rows || 28, cwd: proj(sid), env: { ...process.env, TERM: 'xterm-256color', HOME: root(sid) } });
+  const t = pty.spawn('bash', [join(root(sid), 'run.sh')], { name: 'xterm-256color', cols: cols || 100, rows: rows || 28, cwd: proj(sid), env: cleanEnv({ TERM: 'xterm-256color', HOME: root(sid) }) });
   procs.set(sid, t);
   return t;
 }
 export async function killProcesses(sid) { try { procs.get(sid)?.kill(); } catch { /* ignore */ } }
 export async function removeContainer(sid) { await killProcesses(sid); procs.delete(sid); await rm(root(sid), { recursive: true, force: true }); }
 export async function cleanupLeftovers() { return 0; }
+export async function diskUsage() { return {}; }
+export async function cacheUsageMb() { return 0; }
+export async function purgeCache() {}
 export async function ensureReady() { console.warn('⚠ SANDBOX_PROVIDER=local: projects run on this machine WITHOUT isolation. Development only.'); }

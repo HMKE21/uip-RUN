@@ -1,12 +1,35 @@
-# Caddy in front of the gateway: automatic HTTPS for the control socket and a wildcard certificate for the previews.
-# The wildcard needs the DNS challenge, so build Caddy with your DNS provider's module (https://caddy.community/t/how-to-use-dns-provider-modules-in-caddy-2/8148)
-# DNS: A records for  sandbox.example.com  and  *.sbx.example.com  -> this server.
-sandbox.example.com {
-	reverse_proxy 127.0.0.1:8787
+# Caddy in front of the gateway. DNS: A records for sandbox.example.com and *.sbx.example.com -> this server.
+# The wildcard needs the DNS challenge (Caddy build with your DNS provider's module).
+#
+# IMPORTANT: use a preview domain that is NOT a subdomain of your main site (e.g. example-previews.net, not sbx.example.com):
+# student code runs on <id>.<preview domain> and can set cookies for the parent domain.
+
+(secure_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
 }
+
+sandbox.example.com {
+	import secure_headers
+	@ws path /ws /healthz
+	handle @ws {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle {
+		respond 404
+	}
+}
+
 *.sbx.example.com {
+	import secure_headers
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	request_body {
+		max_size 100MB
 	}
 	reverse_proxy 127.0.0.1:8787
 }

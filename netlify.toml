@@ -9,3 +9,4 @@
     Content-Security-Policy = "frame-ancestors https://uip-nub.vercel.app http://localhost:5173 http://localhost:4173"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "no-referrer"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), hid=(), midi=(), display-capture=(), interest-cohort=()"

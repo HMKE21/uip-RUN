@@ -195,3 +195,11 @@ test('preview links: external -> new tab; relative page -> warning; new-tab / ma
   assert.equal(clickOn(ctx, listeners, anchor('#x'), { defaultPrevented: true }).defaultPrevented, true); // a router already handled it
   assert.equal(opened.length, 1);
 });
+
+test('runner never gives the preview iframe allow-same-origin or allow-modals', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../runner.js', import.meta.url), 'utf8');
+  const m = /setAttribute\('sandbox', '([^']*)'\)/.exec(src);
+  assert.ok(m);
+  assert.ok(!/allow-same-origin/.test(m[1]) && !/allow-modals/.test(m[1]), m[1]);
+});

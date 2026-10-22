@@ -106,7 +106,13 @@ async function runWeb(msg) {
   const iframe = document.createElement('iframe');
   // NO `allow-modals`: native alert/confirm/prompt must never open (they freeze the tab and look like a message from the platform).
   // The preview gets safe replacements instead (see PREVIEW_SHIM in lib/buildWeb.js).
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads');
+  // NO `allow-same-origin` either: with `allow-scripts` + `allow-same-origin` an srcdoc page shares this page's origin, so student code
+  // could do `parent.document…` (remove the sandbox attribute, re-open native dialogs, read the runner's storage, forge messages to the IDE).
+  // Without it the preview has an opaque origin and cannot touch this page. localStorage / sessionStorage / document.cookie are
+  // replaced by in-memory versions in the shim so ordinary apps keep working.
+  iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-downloads');
+  iframe.setAttribute('allow', ''); // no camera / microphone / geolocation … delegated to the preview
+  iframe.setAttribute('referrerpolicy', 'no-referrer');
   iframe.title = 'Project preview';
   current.iframe = iframe;
   iframe.addEventListener('load', () => { if (current?.id === id) status(id, 'running', 'Preview ready'); });

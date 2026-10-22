@@ -12,11 +12,15 @@ import pty from '@lydell/node-pty';
 import { cfg, PREVIEW_PORTS } from './config.js';
 import { verifyToken } from './auth.js';
 import { buildScript, KINDS } from './scripts.js';
+import { inspectZip } from './zipcheck.js';
+import { hostOnlyCookies } from './proc.js';
 
 const dk = await import(cfg.provider === 'local' ? './local.js' : './docker.js');
 
 const sessions = new Map(); // sid -> session
 const OUT_BUFFER = 64 * 1024;
+const MAX_BUFFERED = 2 * 1024 * 1024; // bytes queued for one browser before the terminal is paused
+const MAX_TEXT_FRAME = 64 * 1024;     // control messages are tiny; only the single project zip is binary
 const PORT_ORDER = PREVIEW_PORTS;
 // These kinds run apps that validate the Host header (Vite, Django, Rails…), so the proxy presents the request as
 // http://localhost:<port> and translates redirects back. Laravel keeps the real host so the URLs it generates are right.
@@ -28,12 +32,37 @@ const safeEntry = (s) => typeof s === 'string' && s.length <= 200 && /^[\p{L}\p{
 const clampCols = (n) => Math.min(500, Math.max(20, Number(n) || 100));
 const clampRows = (n) => Math.min(200, Math.max(5, Number(n) || 28));
 
+const log = (event, data = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
+
+// ---------------------------------------------------------------- abuse limits (per client IP)
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+/** the real client address: behind Caddy every peer is loopback, so (only then) the rightmost X-Forwarded-For entry is used */
+function clientIp(req) {
+  const peer = req.socket.remoteAddress || '';
+  if (cfg.trustProxy && LOOPBACK.has(peer)) {
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+    if (xff.length) return xff[xff.length - 1].slice(0, 64);
+  }
+  return peer;
+}
+const connsByIp = new Map(); // ip -> open control sockets
+const authFails = new Map(); // ip -> { n, reset }
+const lastStart = new Map(); // userId -> time of the last environment start
+let preAuth = 0;             // sockets that connected but have not authenticated yet
+const ipBlocked = (ip) => { const f = authFails.get(ip); return !!f && Date.now() < f.reset && f.n >= cfg.authFailLimit; };
+const noteAuthFail = (ip) => {
+  const f = authFails.get(ip);
+  if (!f || Date.now() >= f.reset) authFails.set(ip, { n: 1, reset: Date.now() + cfg.authFailWindowMs });
+  else f.n++;
+};
+
 // ---------------------------------------------------------------- sessions
 const previewUrlFor = (sid) => `${cfg.previewScheme}://${sid}.${cfg.previewDomain}`;
 
 async function destroy(s, reason) {
   if (!sessions.delete(s.sid)) return;
-  clearInterval(s.poll);
+  log('session_end', { sid: s.sid, user: s.userId, reason, seconds: Math.round((Date.now() - s.createdAt) / 1000) });
+  clearInterval(s.poll); clearInterval(s.resumeTimer);
   try { s.term?.kill(); } catch { /* ignore */ }
   send(s.ws, { t: 'closed', reason });
   try { s.ws?.close(); } catch { /* ignore */ }
@@ -51,19 +80,36 @@ function startTerminal(s, cols, rows) {
   s.previewPort = null; s.seen = new Set(); s.out = '';
   let t;
   try { t = dk.spawnTerminal(pty, s.sid, { cols: clampCols(cols), rows: clampRows(rows) }); } catch (e) {
-    return send(s.ws, { t: 'error', text: `Could not open the terminal: ${e.message}` });
+    return send(s.ws, { t: 'error', text: `Could not open the terminal.` });
   }
   s.term = t;
   t.onData((d) => {
     s.out = (s.out + d).slice(-OUT_BUFFER);
     send(s.ws, { t: 'out', d });
+    // back-pressure: a program that prints without end (`yes`) must not make the gateway buffer gigabytes for a slow browser
+    if (s.ws && s.ws.bufferedAmount > MAX_BUFFERED && !s.paused) {
+      s.paused = true;
+      try { t.pause(); } catch { /* ignore */ }
+      s.resumeTimer = setInterval(() => {
+        if (!s.ws || s.ws.readyState !== 1 || s.ws.bufferedAmount < MAX_BUFFERED / 4) {
+          clearInterval(s.resumeTimer); s.paused = false;
+          try { t.resume(); } catch { /* ignore */ }
+        }
+      }, 100);
+    }
   });
   t.onExit(({ exitCode }) => { if (s.term === t) { s.term = null; send(s.ws, { t: 'exit', code: exitCode }); } });
 }
 
 function watchPorts(s) {
   s.poll = setInterval(async () => {
-    if (!sessions.has(s.sid) || !s.term) return;
+    if (!sessions.has(s.sid) || !s.term || s.polling) return; // never let slow `docker exec` calls pile up
+    s.polling = true;
+    try { await pollPorts(s); } finally { s.polling = false; }
+  }, 2000);
+}
+async function pollPorts(s) {
+  {
     const up = (await dk.listening(s.sid)).filter((u) => PREVIEW_PORTS.includes(u.port));
     for (const u of up) {
       if (u.loopbackOnly && !s.seen.has(u.port)) {
@@ -77,22 +123,27 @@ function watchPorts(s) {
       s.previewPort = open[0];
       send(s.ws, { t: 'preview', url: previewUrlFor(s.sid), port: s.previewPort });
     } else if (!stillUp && s.previewPort) { s.previewPort = null; send(s.ws, { t: 'preview', url: null }); }
-  }, 2000);
+  }
 }
 
 async function startSession(ws, claims, init, zip) {
-  if (sessions.size >= cfg.maxSessions) { send(ws, { t: 'error', text: 'The sandbox is busy right now (all environments are in use). Try again in a few minutes.' }); return null; }
+  const t0 = Date.now();
+  if (t0 - (lastStart.get(claims.sub) || 0) < cfg.sessionCooldownMs) { send(ws, { t: 'error', text: 'Please wait a moment before starting again.' }); return null; }
+  lastStart.set(claims.sub, t0);
   for (const old of [...sessions.values()]) if (old.userId === claims.sub) await destroy(old, 'replaced by a new run');
-  const sid = randomBytes(8).toString('hex');
+  // capacity is checked AFTER the old session is gone and in the same tick as sessions.set(): two parallel starts cannot both slip past the limit
+  if (sessions.size >= cfg.maxSessions) { send(ws, { t: 'error', text: 'The sandbox is busy right now (all environments are in use). Try again in a few minutes.' }); return null; }
+  const sid = randomBytes(16).toString('hex');
   const s = { sid, userId: claims.sub, projectId: claims.pid, ws, term: null, out: '', createdAt: Date.now(), lastActive: Date.now(), detachedAt: 0, previewPort: null, seen: new Set(), ports: {}, poll: null, kind: init.kind };
   sessions.set(sid, s);
+  log('session_start', { sid, user: claims.sub, project: claims.pid, kind: init.kind });
   try {
     send(ws, { t: 'status', text: 'Creating the environment…' });
     await dk.createContainer(sid, claims.sub);
     s.ports = await dk.portMap(sid);
     send(ws, { t: 'status', text: 'Uploading the project…' });
     const tmp = path.join(os.tmpdir(), `uip-${sid}.zip`);
-    await writeFile(tmp, zip, { mode: 0o644 });
+    await writeFile(tmp, zip, { mode: 0o600 });
     try { await dk.uploadZip(sid, tmp); } finally { unlink(tmp).catch(() => {}); }
     await dk.writeScript(sid, buildScript({ kind: init.kind, entry: init.entry, previewUrl: previewUrlFor(sid), previewDomain: cfg.previewDomain }));
     send(ws, { t: 'status', text: 'Running' });
@@ -101,7 +152,9 @@ async function startSession(ws, claims, init, zip) {
     watchPorts(s);
     return s;
   } catch (e) {
-    send(ws, { t: 'error', text: `Could not start the environment: ${String(e.stderr || '').trim().split('\n').filter(Boolean).pop() || String(e.message).split('\n')[0]}` });
+    // docker's stderr (paths, daemon messages) stays in the server log; the browser gets a generic message
+    log('session_failed', { sid, user: claims.sub, error: String(e.stderr || e.message || e).trim().split('\n').filter(Boolean).slice(-3).join(' | ') });
+    send(ws, { t: 'error', text: 'Could not start the environment. Please try again in a moment; if it keeps failing, tell the administrator.' });
     await destroy(s, 'failed to start');
     return null;
   }
@@ -110,11 +163,38 @@ async function startSession(ws, claims, init, zip) {
 setInterval(() => {
   const now = Date.now();
   for (const s of sessions.values()) {
-    if (now - s.createdAt > cfg.maxLifeMs) destroy(s, 'time limit reached');
-    else if (!s.ws && now - s.detachedAt > cfg.detachedMs) destroy(s, 'disconnected');
-    else if (now - s.lastActive > cfg.idleMs) destroy(s, 'idle for too long');
+    if (now - s.createdAt > cfg.maxLifeMs) destroy(s, 'time limit reached').catch(() => {});
+    else if (!s.ws && now - s.detachedAt > cfg.detachedMs) destroy(s, 'disconnected').catch(() => {});
+    else if (now - s.lastActive > cfg.idleMs) destroy(s, 'idle for too long').catch(() => {});
   }
+  for (const [ip, f] of authFails) if (now >= f.reset) authFails.delete(ip);
+  for (const [u, t] of lastStart) if (now - t > 60_000) lastStart.delete(u);
 }, 10_000).unref();
+
+// Disk watchdog: `dd if=/dev/zero of=big` would otherwise fill the HOST disk and take every other session down.
+let diskBusy = false;
+setInterval(async () => {
+  if (diskBusy || !sessions.size) return;
+  diskBusy = true;
+  try {
+    const usage = await dk.diskUsage();
+    for (const s of [...sessions.values()]) {
+      const used = usage[dk.containerName?.(s.sid)] || 0;
+      if (used > cfg.maxDiskMb * 1e6) {
+        send(s.ws, { t: 'out', d: `\r\n\x1b[31m✗ Disk limit reached (${cfg.maxDiskMb} MB) — the environment was stopped.\x1b[0m\r\n` });
+        log('disk_limit', { sid: s.sid, user: s.userId, mb: Math.round(used / 1e6) });
+        await destroy(s, 'disk limit exceeded');
+        continue;
+      }
+      const cacheMb = await dk.cacheUsageMb(s.sid);
+      if (cacheMb > cfg.cacheMaxMb * 1.25) {
+        log('cache_limit', { sid: s.sid, user: s.userId, mb: cacheMb });
+        send(s.ws, { t: 'out', d: '\r\n\x1b[33m⚠ Your dependency cache grew past its limit and was cleared.\x1b[0m\r\n' });
+        await dk.purgeCache(s.sid);
+      }
+    }
+  } catch (e) { console.error('disk watchdog:', e.message); } finally { diskBusy = false; }
+}, 60_000).unref();
 
 // ---------------------------------------------------------------- preview reverse proxy
 function previewSid(hostHeader) {
@@ -122,7 +202,7 @@ function previewSid(hostHeader) {
   const suffix = `.${cfg.previewDomain}`;
   if (!host.endsWith(suffix)) return null;
   const label = host.slice(0, -suffix.length);
-  return /^[a-f0-9]{16}$/.test(label) ? label : null;
+  return /^[a-f0-9]{32}$/.test(label) ? label : null;
 }
 
 function upstreamOf(sid) {
@@ -164,9 +244,13 @@ function proxyHttp(sid, req, res) {
     h['content-security-policy'] = [].concat(h['content-security-policy'] || [], frameAncestors()); // …and only by it
     if (cfg.previewScheme === 'https') h['content-security-policy'].push('upgrade-insecure-requests');
     if (h.location) h.location = mapLocation(s, h.location);
+    if (h['set-cookie']) h['set-cookie'] = hostOnlyCookies(h['set-cookie']);
+    if (!h['referrer-policy']) h['referrer-policy'] = 'same-origin'; // the preview URL (contains the session id) must not leak to third parties
     res.writeHead(ur.statusCode || 502, h);
     ur.pipe(res);
   });
+  up.setTimeout(300_000, () => up.destroy()); // an upstream that never answers must not hold a socket forever
+  res.on('close', () => up.destroy());
   up.on('error', () => {
     // Nothing is listening (yet / any more): the app is still booting or crashed. Answer with a self-refreshing page, not a bare 502.
     if (!res.headersSent) res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'retry-after': '2', 'cache-control': 'no-store', 'content-security-policy': frameAncestors() });
@@ -176,8 +260,11 @@ function proxyHttp(sid, req, res) {
 }
 
 function proxyUpgrade(sid, req, socket, head) {
+  if (String(req.headers.upgrade || '').toLowerCase() !== 'websocket') return socket.destroy();
   const { s, port } = upstreamOf(sid);
   if (!s || !port) return socket.destroy();
+  if ((s.upgrades || 0) >= 100) return socket.destroy(); // at most 100 simultaneous WebSockets into one app
+  s.upgrades = (s.upgrades || 0) + 1;
   const up = net.connect(port, '127.0.0.1', () => {
     const lines = [`${req.method} ${req.url} HTTP/1.1`];
     for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${mapRequestHeader(s, req.rawHeaders[i], req.rawHeaders[i + 1])}`);
@@ -185,36 +272,58 @@ function proxyUpgrade(sid, req, socket, head) {
     if (head?.length) up.write(head);
     socket.pipe(up).pipe(socket);
   });
-  up.on('error', () => socket.destroy());
-  socket.on('error', () => up.destroy());
+  let closed = false;
+  const done = () => { if (closed) return; closed = true; s.upgrades = Math.max(0, (s.upgrades || 1) - 1); up.destroy(); socket.destroy(); };
+  up.on('error', done); up.on('close', done);
+  socket.on('error', done); socket.on('close', done);
 }
 
 // ---------------------------------------------------------------- HTTP + WebSocket entry points
 const server = http.createServer((req, res) => {
-  const sid = previewSid(req.headers.host);
-  if (sid) return proxyHttp(sid, req, res);
-  if (req.url === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, sessions: sessions.size, max: cfg.maxSessions })); }
-  res.writeHead(404, { 'content-type': 'text/plain' }); res.end('uip-sandbox');
+  try {
+    const sid = previewSid(req.headers.host);
+    if (sid) return proxyHttp(sid, req, res);
+    // no session counts here: this endpoint is reachable from the Internet through the reverse proxy
+    if (req.url === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"ok":true}'); }
+    res.writeHead(404, { 'content-type': 'text/plain' }); res.end('uip-sandbox');
+  } catch { try { res.destroy(); } catch { /* ignore */ } }
 });
+server.headersTimeout = 20_000;      // slow-loris: the whole header block must arrive within 20 s
+server.maxHeadersCount = 100;
+server.on('clientError', (_e, socket) => { try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch { /* ignore */ } });
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: cfg.maxZipBytes + 4096 });
 
 server.on('upgrade', (req, socket, head) => {
   const sid = previewSid(req.headers.host);
-  if (sid) return proxyUpgrade(sid, req, socket, head);
-  const url = new URL(req.url, 'http://x');
+  if (sid) { try { return proxyUpgrade(sid, req, socket, head); } catch { return socket.destroy(); } }
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { return socket.destroy(); }
   if (url.pathname !== '/ws') return socket.destroy();
   if (!cfg.allowedOrigins.includes(req.headers.origin || '')) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); return socket.destroy(); }
   if (url.search) { socket.write('HTTP/1.1 400 Bad Request\r\n\r\n'); return socket.destroy(); } // credentials in the URL are refused
+  const ip = clientIp(req);
+  if (ipBlocked(ip) || (connsByIp.get(ip) || 0) >= cfg.maxConnsPerIp || preAuth >= cfg.maxPreAuthConns) { socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return socket.destroy(); }
   // The token is NOT read from the URL (it would leak into access logs); the client sends {t:'auth', token} as its first frame.
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, null));
 });
 
 wss.on('connection', (ws, req, claims) => {
   let session = null; let pending = null; let busy = false;
+  const ip = clientIp(req);
+  connsByIp.set(ip, (connsByIp.get(ip) || 0) + 1);
+  let counted = true; // still counted as "not authenticated yet"
+  preAuth++;
+  const authed = () => { if (counted) { counted = false; preAuth--; } };
+  // Before authentication a socket may send only a few bytes: the server-wide maxPayload (needed for the project zip) is lowered for
+  // this connection until the token has been verified, so nobody can push 60 MB at the gateway anonymously.
+  try { ws._receiver._maxPayload = 4096; } catch { /* the 4096-byte check on the first frame still applies */ }
   ws.isAlive = true; ws.on('pong', () => { ws.isAlive = true; });
-  const authTimer = setTimeout(() => { if (!claims) ws.close(4401, 'unauthorized'); }, 5000);
-  ws.on('close', () => clearTimeout(authTimer));
+  const authTimer = setTimeout(() => { if (!claims) { noteAuthFail(ip); ws.close(4401, 'unauthorized'); } }, 5000);
+  ws.on('close', () => {
+    clearTimeout(authTimer); authed();
+    const n = (connsByIp.get(ip) || 1) - 1; if (n <= 0) connsByIp.delete(ip); else connsByIp.set(ip, n);
+  });
 
   ws.on('message', async (data, isBinary) => {
     if (!claims) { // first frame must be a small JSON {t:'auth', token}
@@ -223,14 +332,20 @@ wss.on('connection', (ws, req, claims) => {
         const a = JSON.parse(String(data));
         if (a.t !== 'auth') throw new Error('auth required');
         claims = verifyToken(a.token, cfg.jwtSecret);
-        clearTimeout(authTimer);
-      } catch { ws.close(4401, 'unauthorized'); }
+        clearTimeout(authTimer); authed();
+        try { ws._receiver._maxPayload = cfg.maxZipBytes + 4096; } catch { /* ignore */ }
+      } catch (e) { noteAuthFail(ip); log('auth_failed', { ip, reason: String(e.message).slice(0, 60) }); ws.close(4401, 'unauthorized'); }
       return;
     }
+    if (!isBinary && data.length > MAX_TEXT_FRAME) return send(ws, { t: 'error', text: 'Invalid request.' });
     try {
       if (isBinary) {
         if (!pending || busy || session) return;
         if (data.length > cfg.maxZipBytes) return send(ws, { t: 'error', text: 'The project is too large for the sandbox.' });
+        try { inspectZip(data, { maxFiles: cfg.maxZipFiles, maxBytes: cfg.maxUnzipBytes }); } catch (e) {
+          pending = null; log('zip_rejected', { user: claims.sub, reason: e.message });
+          return send(ws, { t: 'error', text: `The project was rejected: ${e.message}.` });
+        }
         busy = true; const init = pending; pending = null;
         try { session = await startSession(ws, claims, init, data); } finally { busy = false; }
         return;
@@ -265,7 +380,7 @@ wss.on('connection', (ws, req, claims) => {
           await restartTerminal(session, m.cols, m.rows);
         } finally { busy = false; }
       } else if (m.t === 'stop') await destroy(session, 'stopped');
-    } catch (e) { busy = false; send(ws, { t: 'error', text: `Bad request: ${e.message}` }); }
+    } catch { busy = false; send(ws, { t: 'error', text: 'Bad request.' }); }
   });
 
   ws.on('close', () => { if (session && session.ws === ws) { session.ws = null; session.detachedAt = Date.now(); } });
@@ -279,8 +394,11 @@ async function main() {
   if (cfg.jwtSecret.length < 32) { console.error('SANDBOX_JWT_SECRET must be set (≥ 32 characters, same value as in Full-API).'); process.exit(1); }
   await dk.ensureReady();
   const removed = await dk.cleanupLeftovers();
-  server.listen(cfg.port, () => console.log(`uip-sandbox listening on :${cfg.port} (provider: ${dk.name}, preview: ${cfg.previewScheme}://<id>.${cfg.previewDomain}, removed ${removed} stale containers)`));
+  server.listen(cfg.port, cfg.host, () => console.log(`uip-sandbox listening on ${cfg.host}:${cfg.port} (provider: ${dk.name}, preview: ${cfg.previewScheme}://<id>.${cfg.previewDomain}, removed ${removed} stale containers)`));
 }
 const shutdown = async () => { await Promise.all([...sessions.values()].map((s) => destroy(s, 'gateway restarting'))); process.exit(0); };
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
+// One malformed request must not take every student's session down (a restart removes all containers): log and carry on.
+process.on('uncaughtException', (e) => console.error('uncaught exception:', e));
+process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e));
 main().catch((e) => { console.error(e.message); process.exit(1); });

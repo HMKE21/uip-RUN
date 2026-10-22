@@ -85,7 +85,7 @@ test('shell sessions take input and can be resumed after a reconnect', async () 
   ws.close();
   await new Promise((r) => setTimeout(r, 200));
 
-  const ws2 = await connect(tok({ ...c, jti: 'again' }));
+  const ws2 = await connect(tok({ ...c, jti: 'again-0123456789' }));
   ws2.send(JSON.stringify({ t: 'init', kind: 'shell', entry: '', resume: true }));
   await waitFor(ws2, (m) => m.t === 'session' && m.resumed);
   await waitFor(ws2, (m) => m.t === 'out' && /MARK42/.test(m.d)); // scrollback replayed
@@ -127,4 +127,39 @@ test('entries that could be used as options or escape the project are refused', 
     await waitFor(ws, (m) => m.t === 'error' && m.text === 'Invalid request.');
   }
   ws.close();
+});
+
+test('an unauthenticated socket cannot push a large frame', async () => {
+  const code = await new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { origin: ORIGIN } });
+    ws.on('open', () => ws.send(Buffer.alloc(2 * 1024 * 1024, 1)));
+    ws.on('close', (c) => resolve(c));
+    ws.on('error', () => {});
+    setTimeout(() => reject(new Error('socket stayed open')), 5000);
+  });
+  assert.equal(code, 1009);
+});
+
+test('the student shell never sees the gateway secret', async () => {
+  const ws = await connect(tok(claims()));
+  ws.send(JSON.stringify({ t: 'init', kind: 'shell', entry: '' }));
+  await waitFor(ws, (m) => m.t === 'send-files');
+  ws.send(makeZip({ 'a.txt': 'x' }));
+  await waitFor(ws, (m) => m.t === 'session');
+  ws.send(JSON.stringify({ t: 'input', d: 'echo LEAK=[${SANDBOX_JWT_SECRET:-none}]\n' }));
+  await waitFor(ws, (m) => m.t === 'out' && /LEAK=\[none\]/.test(m.d));
+  ws.send(JSON.stringify({ t: 'stop' }));
+  await waitFor(ws, (m) => m.t === 'closed');
+});
+
+test('a zip with a path-traversal entry is rejected before the container', async () => {
+  const ws = await connect(tok(claims()));
+  ws.send(JSON.stringify({ t: 'init', kind: 'shell', entry: '' }));
+  await waitFor(ws, (m) => m.t === 'send-files');
+  const dir = mkdtempSync(join(tmpdir(), 'slip-'));
+  execFileSync('python3', ['-c', `import zipfile; z=zipfile.ZipFile('${join(dir, 's.zip')}','w'); z.writestr('../evil.txt','x'); z.close()`]);
+  ws.send(execFileSync('cat', [join(dir, 's.zip')]));
+  const err = await waitFor(ws, (m) => m.t === 'error');
+  assert.match(err.text, /rejected/);
+  assert.ok(!ws.msgs.some((m) => m.t === 'session'));
 });
