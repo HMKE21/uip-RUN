@@ -46,6 +46,8 @@ export const cfg = {
   maxUnzipBytes: int('MAX_UNZIP_MB', 600) * 1024 * 1024, // declared size after extraction (zip-bomb guard)
   maxZipFiles: int('MAX_ZIP_FILES', 30000),
   maxDiskMb: int('SANDBOX_MAX_DISK_MB', 6144), // watchdog kills a session whose writable layer exceeds this
+  // how often the watchdog measures: `dd if=/dev/zero` writes GB per second, so a 60 s gap could fill the HOST disk before it is noticed
+  diskWatchMs: Math.max(5, int('DISK_WATCH_SEC', 15)) * 1000,
   disk: String(env.SANDBOX_DISK || ''),        // optional hard quota ("5g"; overlay2 on xfs with pquota)
   maxConnsPerIp: int('MAX_CONNS_PER_IP', 12),
   maxPreAuthConns: int('MAX_PREAUTH_CONNS', 100),

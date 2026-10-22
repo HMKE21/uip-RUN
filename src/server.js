@@ -204,7 +204,7 @@ setInterval(async () => {
       }
     }
   } catch (e) { console.error('disk watchdog:', e.message); } finally { diskBusy = false; }
-}, 60_000).unref();
+}, cfg.diskWatchMs).unref();
 
 // ---------------------------------------------------------------- preview reverse proxy
 function previewSid(hostHeader) {
