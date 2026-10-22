@@ -20,8 +20,9 @@ const serialize = () => [...used].map(([k, e]) => `${k} ${e}`).join('\n') + (use
 function compact() {
   if (!storeFile) return;
   const tmp = `${storeFile}.tmp`;
-  writeFileSync(tmp, serialize(), { mode: 0o600 });
-  const fd = openSync(tmp, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+  // write + fsync on the SAME write-capable descriptor: Windows rejects fsync on a read-only handle with EPERM
+  const fd = openSync(tmp, 'w', 0o600);
+  try { writeSync(fd, serialize()); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, storeFile);
 }
 
