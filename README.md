@@ -33,7 +33,7 @@ on a server the gateway prints a warning at start-up — rebuild with `docker bu
 ```
 Browser (UIP IDE) ──POST /api/v1/projects/{id}/sandbox-token──▶ Full-API   (checks the user may open the project, signs a 2-minute token)
         │
-        ├──wss://sandbox.example.com/ws?token=…──────────────▶ this gateway  (terminal + control channel, uploads the project zip)
+        ├──wss://sandbox.example.com/ws  (1st frame {t:'auth',token})▶ this gateway  (terminal + control channel, uploads the project zip)
         └──iframe https://<sessionId>.sbx.example.com ───────▶ this gateway  (reverse proxy to the app inside the container)
 ```
 

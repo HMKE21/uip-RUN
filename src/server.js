@@ -1,5 +1,5 @@
 // uip-sandbox gateway.
-//   wss://<gateway>/ws?token=<jwt from Full-API>   terminal + control channel (used by the IDE)
+//   wss://<gateway>/ws   terminal + control channel (used by the IDE); first frame = {t:"auth", token:<jwt from Full-API>}
 //   http(s)://<sessionId>.<PREVIEW_DOMAIN>/…       reverse proxy to the app running in that session's container
 import http from 'node:http';
 import net from 'node:net';
@@ -205,16 +205,28 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname !== '/ws') return socket.destroy();
   if (!cfg.allowedOrigins.includes(req.headers.origin || '')) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); return socket.destroy(); }
-  let claims;
-  try { claims = verifyToken(url.searchParams.get('token'), cfg.jwtSecret); } catch { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); return socket.destroy(); }
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, claims));
+  if (url.search) { socket.write('HTTP/1.1 400 Bad Request\r\n\r\n'); return socket.destroy(); } // credentials in the URL are refused
+  // The token is NOT read from the URL (it would leak into access logs); the client sends {t:'auth', token} as its first frame.
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, null));
 });
 
 wss.on('connection', (ws, req, claims) => {
   let session = null; let pending = null; let busy = false;
   ws.isAlive = true; ws.on('pong', () => { ws.isAlive = true; });
+  const authTimer = setTimeout(() => { if (!claims) ws.close(4401, 'unauthorized'); }, 5000);
+  ws.on('close', () => clearTimeout(authTimer));
 
   ws.on('message', async (data, isBinary) => {
+    if (!claims) { // first frame must be a small JSON {t:'auth', token}
+      try {
+        if (isBinary || data.length > 4096) throw new Error('bad first frame');
+        const a = JSON.parse(String(data));
+        if (a.t !== 'auth') throw new Error('auth required');
+        claims = verifyToken(a.token, cfg.jwtSecret);
+        clearTimeout(authTimer);
+      } catch { ws.close(4401, 'unauthorized'); }
+      return;
+    }
     try {
       if (isBinary) {
         if (!pending || busy || session) return;

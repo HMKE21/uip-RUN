@@ -25,10 +25,13 @@ const get = (host, path = '/') => new Promise((resolve, reject) => {
   http.get({ host: '127.0.0.1', port: PORT, path, headers: { host } }, (r) => { let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => resolve({ status: r.statusCode, headers: r.headers, body: b })); }).on('error', reject);
 });
 const connect = (token, origin = ORIGIN) => new Promise((resolve, reject) => {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${token}`, { headers: { origin } });
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { origin } });
   ws.msgs = [];
   ws.on('message', (d, bin) => { if (!bin) ws.msgs.push(JSON.parse(String(d))); });
-  ws.on('open', () => resolve(ws)); ws.on('error', reject);
+  // token travels in the first frame; a bad token makes the gateway close with 4401 right after
+  ws.on('open', () => { ws.send(JSON.stringify({ t: 'auth', token })); setTimeout(() => (ws.readyState === 1 ? resolve(ws) : reject(new Error('401'))), 300); });
+  ws.on('close', (code) => { if (code === 4401) reject(new Error('401')); });
+  ws.on('error', reject);
 });
 const waitFor = async (ws, pred, ms = 15000) => {
   const end = Date.now() + ms;
@@ -45,6 +48,7 @@ after(() => { gw?.kill('SIGKILL'); });
 test('rejects a wrong origin and a bad token', async () => {
   await assert.rejects(connect(tok(claims()), 'https://evil.example'), /403/);
   await assert.rejects(connect('garbage'), /401/);
+  await assert.rejects(new Promise((res, rej) => { const w = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=x`, { headers: { origin: ORIGIN } }); w.on('open', res); w.on('error', rej); }), /400/); // token in URL refused
   await assert.rejects(connect(tok(claims(), 'z'.repeat(40))), /401/);
 });
 
