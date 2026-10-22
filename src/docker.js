@@ -38,6 +38,8 @@ export async function createContainer(sid, userId) {
     '--ulimit', `fsize=${2 * 1024 ** 3}:${2 * 1024 ** 3}`, // no single file above 2 GiB (the disk watchdog catches many smaller ones)
     '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',       // the egress firewall only covers IPv4
     '--hostname', 'sandbox',
+    // defence in depth (Docker Desktop / no firewall): the usual names for "the host" and the cloud metadata service resolve to nothing useful
+    '--add-host', 'host.docker.internal:127.0.0.1', '--add-host', 'gateway.docker.internal:127.0.0.1', '--add-host', 'metadata.google.internal:127.0.0.1',
     ...cfg.dns.flatMap((d) => ['--dns', d]),
     ...(cfg.disk ? ['--storage-opt', `size=${cfg.disk}`] : []),
     '--network', cfg.network,

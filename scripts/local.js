@@ -5,7 +5,7 @@
 //  - creates .env.local with a random SANDBOX_JWT_SECRET (printed so you can copy it to Full-API)
 //  - starts the gateway on http://localhost:8787 (previews at http://<id>.localhost:8787)
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -34,6 +34,7 @@ if (!env.SANDBOX_JWT_SECRET || env.SANDBOX_JWT_SECRET.length < 32) {
     'MAX_SESSIONS=2',
     '',
   ].join('\n'));
+  try { chmodSync(ENV_FILE, 0o600); } catch { /* Windows */ } // the file holds the signing secret
   console.log(`Created ${ENV_FILE}`);
   env = Object.fromEntries(readFileSync(ENV_FILE, 'utf8').split(/\r?\n/).map((l) => /^([A-Z_]+)=(.*)$/.exec(l.trim())).filter(Boolean).map((m) => [m[1], m[2]]));
 }
