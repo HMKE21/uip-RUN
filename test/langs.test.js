@@ -159,6 +159,12 @@ test('sql: SQLite by default', needs(['sqlite3'], () => {
 test('sql: a T-SQL script gets a clear warning', needs(['sqlite3'], () => {
   assert.match(run({ entry: 'a.sql', files: { 'a.sql': 'DECLARE @x INT = 1;\nSELECT 1;' } }), /looks like T-SQL/);
 }));
+test('tsql: a .tsql file runs on the built-in T-SQL runner (PRINT, variables, GO, TOP, TRY/CATCH)', needs(['python3'], () => {
+  const out = run({ entry: 'main.tsql', files: { 'main.tsql': "PRINT 'Welcome In UIP NUB';\nDECLARE @n INT = 2;\nCREATE TABLE t (id INT IDENTITY(1,1) PRIMARY KEY, [name] NVARCHAR(20));\nINSERT INTO t ([name]) VALUES ('a'),('b'),('c');\nGO\nSELECT TOP 2 * FROM dbo.t ORDER BY id DESC;\nBEGIN TRY SELECT * FROM nope; END TRY BEGIN CATCH PRINT 'caught ' + ERROR_MESSAGE(); END CATCH" } });
+  assert.match(out, /Welcome In UIP NUB/);
+  assert.match(out, /\(2 rows affected\)/);
+  assert.match(out, /caught Invalid object name 'nope'/);
+}));
 test('sql: "-- engine: mysql" runs on MariaDB', needs(['mariadbd', 'mariadb'], (t) => {
   if (!unpriv) return t.skip('MariaDB will not run as root');
   assert.match(run({ entry: 'a.sql', files: { 'a.sql': '-- engine: mysql\nCREATE TABLE t(id INT AUTO_INCREMENT PRIMARY KEY, n VARCHAR(9));\nINSERT INTO t(n) VALUES ("my1");\nSELECT * FROM t;' } }), /my1/);

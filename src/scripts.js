@@ -13,7 +13,7 @@ const read = (f) => readFileSync(fileURLToPath(new URL(f, dir)), 'utf8').replace
 /**
  * kind → what it runs
  *   laravel · node · python · static · shell                      (original kinds)
- *   lang    — ONE source file (entry) in any supported language: js ts py php java kt scala groovy clj c cpp cs fs vb go rs zig nim d adb cob asm rb pl raku lua r jl m sh ps1 dart hs ml ex erl lisp scm rkt pro tcl awk f90 pas v vhd sql
+ *   lang    — ONE source file (entry) in any supported language: js ts py php java kt scala groovy clj c cpp cs fs vb go rs zig nim d adb cob asm rb pl raku lua r jl m sh ps1 dart hs ml ex erl lisp scm rkt pro tcl awk f90 pas v vhd sql tsql
  *   maven · gradle · dotnet · go · cargo · rails · php · make     (whole projects, built and started with their own tool)
  *   auto    — look at the files and pick (entry given → lang)
  */
@@ -23,6 +23,7 @@ export const KINDS = ['laravel', 'node', 'python', 'static', 'shell', 'lang', 'm
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 const SOURCES = Object.fromEntries(['laravel', 'node', 'python', 'static', 'shell', 'lang', 'maven', 'gradle', 'dotnet', 'go', 'cargo', 'rails', 'php', 'make'].map((k) => [k, read(`${k}.sh`)]));
+const TSQL_PY = read('tsql.py');
 const PRELUDE = read('_prelude.sh').replace('@SHIM_SOURCE@', () => read('browser-shim.cjs'));
 
 // `auto`: first marker that matches wins (most specific first)
@@ -53,6 +54,7 @@ function body(kind, ctx) {
     return `mkdir -p "$HOME"; cat > "$HOME/.uip-prelude.sh" <<'UIP_PRELUDE_EOF'\n${PRELUDE}\nUIP_PRELUDE_EOF\n${branches.join('\n')}\necho "✗ could not tell what this project is — open a file and press Run on it, or use the terminal below."\nexit 1`;
   }
   return SOURCES[kind]
+    .replaceAll('@TSQL_PY@', () => TSQL_PY)
     .replaceAll('@ENTRY@', () => shq(entry))
     .replaceAll('@PREVIEW_URL@', () => shq(previewUrl))
     .replaceAll('@ALLOWED_HOSTS@', () => shq(`.${previewDomain.replace(/:\d+$/, '')}`))

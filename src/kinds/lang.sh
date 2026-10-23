@@ -95,6 +95,15 @@ case "${E,,}" in
     need raku; echo "▶ raku $E"; exec raku "$E" ;;
   *.m)
     need octave-cli; echo "▶ octave $E   (MATLAB / Octave)"; exec octave-cli --quiet "$E" ;;
+  *.tsql)
+    # T-SQL (SQL Server): no SQL Server in the image, so a built-in interpreter runs a practical subset on in-memory SQLite
+    need python3
+    mkdir -p "$O"
+    cat > "$O/tsql.py" <<'UIP_TSQL_EOF'
+@TSQL_PY@
+UIP_TSQL_EOF
+    echo "▶ T-SQL: $B   (SQL Server dialect — runs a practical subset: GO, PRINT, DECLARE/SET, IF/WHILE, TRY/CATCH, temp tables, TOP, IDENTITY …; no stored procedures / functions / triggers)"
+    exec python3 -I -u "$O/tsql.py" "$E" ;;
   *.sql)
     # engine: from the file name (a.mysql.sql, a.pg.sql, a.sqlite.sql) or a first-lines comment  "-- engine: mysql | postgres | sqlite"; default SQLite
     ENG=sqlite; LB="${E,,}"
@@ -106,7 +115,7 @@ case "${E,,}" in
          case "$H" in mysql|mariadb) ENG=mysql ;; postgres|postgresql|pgsql|pg|psql) ENG=postgres ;; esac ;;
     esac
     if [ "$ENG" = sqlite ] && grep -qiE '^[[:space:]]*GO[[:space:]]*$|DECLARE[[:space:]]+@|SELECT[[:space:]]+TOP[[:space:]]+[0-9(]|N?VARCHAR\(MAX\)|IDENTITY[[:space:]]*\([0-9]' "$E"; then
-      echo "⚠ this looks like T-SQL (Microsoft SQL Server). The sandbox runs SQL on SQLite, MariaDB (MySQL) or PostgreSQL — T-SQL-only syntax will fail."
+      echo "⚠ this looks like T-SQL (Microsoft SQL Server). The sandbox runs SQL on SQLite, MariaDB (MySQL) or PostgreSQL — T-SQL-only syntax will fail. Rename the file to .tsql to run it with the built-in T-SQL runner."
     fi
     case "$ENG" in
       mysql)
