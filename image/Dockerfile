@@ -125,7 +125,7 @@ RUN bash /tmp/install-extras.sh && rm -f /tmp/install-extras.sh
 ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/share/dotnet:/usr/local/julia/bin:/usr/lib/dart/bin:/opt/gradle/bin:/opt/kotlinc/bin:/opt/zig:/opt/scala3/bin:/opt/groovy/bin:/opt/pwsh:${PATH}" \
     RUSTUP_HOME=/usr/local/rustup \
     DOTNET_ROOT=/usr/share/dotnet DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
-    DOTNET_TieredPGO=0 DOTNET_TC_QuickJitForLoops=1 DOTNET_ReadyToRun=1 POWERSHELL_TELEMETRY_OPTOUT=1 \
+    DOTNET_TieredPGO=0 DOTNET_TC_QuickJitForLoops=1 DOTNET_ReadyToRun=1 DOTNET_EnableWriteXorExecute=0 MSBUILDDISABLENODEREUSE=1 POWERSHELL_TELEMETRY_OPTOUT=1 \
     JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8"
 
 # unprivileged user — the project lives in /home/dev/project

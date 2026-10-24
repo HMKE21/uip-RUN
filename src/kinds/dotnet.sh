@@ -1,6 +1,7 @@
 echo "▶ .NET project"
 need dotnet
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+export DOTNET_EnableWriteXorExecute=0 DOTNET_TieredCompilation=1 MSBUILDDISABLENODEREUSE=1 DOTNET_gcServer=0   # W^X memfd vs. the sandbox fsize limit: see lang.sh
 export ASPNETCORE_URLS=http://0.0.0.0:5000 ASPNETCORE_ENVIRONMENT=Development DOTNET_ENVIRONMENT=Development
 P=@ENTRY@
 if [ -z "$P" ] || [ ! -f "$P" ]; then

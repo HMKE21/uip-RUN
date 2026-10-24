@@ -9,6 +9,9 @@ D=$(dirname "$E"); B=$(basename "$E"); N="${B%.*}"
 JF="-XX:+UseSerialGC -Xshare:auto"                                   # JVM flags for the student's program
 JC="-J-XX:TieredStopAtLevel=1 -J-XX:+UseSerialGC -J-Xshare:auto"      # same for javac (a short-lived compiler)
 export JAVA_OPTS="-XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xshare:auto"   # kotlinc / groovy / scala launchers
+# .NET 7+ maps its JIT memory through a huge memfd (W^X double mapping); the sandbox caps file size with ulimit -f (fsize), so ftruncate on it
+# raised SIGXFSZ → "File size limit exceeded (core dumped)" on every `dotnet build`. W^X off = no giant memfd (and a faster start-up).
+export DOTNET_EnableWriteXorExecute=0 DOTNET_TieredCompilation=1 MSBUILDDISABLENODEREUSE=1 DOTNET_gcServer=0
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 DART_SUPPRESS_ANALYTICS=true RUST_BACKTRACE=1
 
 # a .NET project is built once (cached by cbuild) and then started with `dotnet app.dll`  — C#, F#, VB.NET
