@@ -91,7 +91,13 @@ function startTerminal(s, cols, rows) {
     return send(s.ws, { t: 'error', text: `Could not open the terminal.` });
   }
   s.term = t;
-  t.onData((d) => {
+  // Coalesce the PTY output: one WebSocket frame per ~8 ms (or 32 KB) instead of one per tiny chunk. A busy shell (npm install,
+  // compiler output) used to produce thousands of frames per second, each one JSON-encoded, buffered and re-parsed by the browser.
+  let pend = ''; let pendTimer = null;
+  const flush = () => {
+    clearTimeout(pendTimer); pendTimer = null;
+    if (!pend) return;
+    const d = pend; pend = '';
     s.out = (s.out + d).slice(-OUT_BUFFER);
     send(s.ws, { t: 'out', d });
     // back-pressure: a program that prints without end (`yes`) must not make the gateway buffer gigabytes for a slow browser
@@ -105,8 +111,13 @@ function startTerminal(s, cols, rows) {
         }
       }, 100);
     }
+  };
+  t.onData((d) => {
+    pend += d;
+    if (pend.length >= 32768) flush();
+    else if (!pendTimer) pendTimer = setTimeout(flush, 8);
   });
-  t.onExit(({ exitCode }) => { if (s.term === t) { s.term = null; send(s.ws, { t: 'exit', code: exitCode }); } });
+  t.onExit(({ exitCode }) => { flush(); if (s.term === t) { s.term = null; send(s.ws, { t: 'exit', code: exitCode }); } });
 }
 
 function watchPorts(s) {
@@ -114,7 +125,7 @@ function watchPorts(s) {
     if (!sessions.has(s.sid) || !s.term || s.polling) return; // never let slow `docker exec` calls pile up
     s.polling = true;
     try { await pollPorts(s); } finally { s.polling = false; }
-  }, 2000);
+  }, 4000); // every tick is a `docker exec` on the host: 2 s with several sessions kept the machine busy for nothing
 }
 async function pollPorts(s) {
   {
@@ -196,6 +207,9 @@ setInterval(async () => {
         await destroy(s, 'disk limit exceeded');
         continue;
       }
+      // `du` over a multi-GB node_modules cache is heavy disk I/O: check each session every 5 min, not on every 15 s tick
+      if (Date.now() - (s.cacheCheckedAt || 0) < 5 * 60_000) continue;
+      s.cacheCheckedAt = Date.now();
       const cacheMb = await dk.cacheUsageMb(s.sid);
       if (cacheMb > cfg.cacheMaxMb * 1.25) {
         log('cache_limit', { sid: s.sid, user: s.userId, mb: cacheMb });
