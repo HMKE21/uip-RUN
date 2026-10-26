@@ -1,0 +1,43 @@
+--- a/src/lib/officeFmt/create.js	2026-10-25 17:14:21.944923333 +0300
++++ b/src/lib/officeFmt/create.js	2026-10-25 17:15:40.626007035 +0300
+@@ -258,7 +258,7 @@
+   swift: "print(\"Welcome In UIP NUB\")\n",
+   matlab: "disp('Welcome In UIP NUB')\n",
+   vb: "Module Program\n    Sub Main()\n        Console.WriteLine(\"Welcome In UIP NUB\")\n    End Sub\nEnd Module\n",
+-  objc: "#import <Foundation/Foundation.h>\n\nint main(void) {\n    @autoreleasepool {\n        NSLog(@\"Welcome In UIP NUB\");\n    }\n    return 0;\n}\n",
++  objc: "#import <Foundation/Foundation.h>\n\nint main(void) {\n    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];\n    NSLog(@\"Welcome In UIP NUB\");\n    [pool drain];\n    return 0;\n}\n",
+   scala: "object Main {\n  def main(args: Array[String]): Unit = {\n    println(\"Welcome In UIP NUB\")\n  }\n}\n",
+   ex: "IO.puts(\"Welcome In UIP NUB\")\n",
+   erl: "#!/usr/bin/env escript\n\nmain(_) ->\n    io:format(\"Welcome In UIP NUB~n\").\n",
+--- a/src/components/zipbench/runner/detectApps.js	2026-10-25 17:14:21.947395107 +0300
++++ b/src/components/zipbench/runner/detectApps.js	2026-10-25 17:15:46.710006896 +0300
+@@ -18,13 +18,19 @@
+   js: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript', ts: 'TypeScript', mts: 'TypeScript', php: 'PHP', java: 'Java',
+   c: 'C', cpp: 'C++', cc: 'C++', cxx: 'C++', cs: 'C#', go: 'Go', rs: 'Rust', rb: 'Ruby', pl: 'Perl', lua: 'Lua', r: 'R', jl: 'Julia',
+   sh: 'Bash', bash: 'Bash', kt: 'Kotlin', kts: 'Kotlin', dart: 'Dart', hs: 'Haskell', f90: 'Fortran', f95: 'Fortran', f03: 'Fortran',
+-  pas: 'Pascal', pp: 'Pascal', sql: 'SQL', tsql: 'T-SQL',
++  pas: 'Pascal', pp: 'Pascal', dpr: 'Delphi (Free Pascal)', sql: 'SQL', tsql: 'T-SQL',
+   zig: 'Zig', nim: 'Nim', d: 'D', adb: 'Ada', cob: 'COBOL', cbl: 'COBOL', cobol: 'COBOL', asm: 'Assembly (NASM)', nasm: 'Assembly (NASM)', s: 'Assembly (GNU)',
+   fs: 'F#', fsx: 'F#', vb: 'VB.NET', scala: 'Scala', groovy: 'Groovy', gvy: 'Groovy', clj: 'Clojure', cljc: 'Clojure',
+   ex: 'Elixir', exs: 'Elixir', erl: 'Erlang', ml: 'OCaml', lisp: 'Common Lisp', lsp: 'Common Lisp', scm: 'Scheme', ss: 'Scheme', rkt: 'Racket',
+   pro: 'Prolog', prolog: 'Prolog', tcl: 'Tcl', awk: 'AWK', raku: 'Raku', rakumod: 'Raku', p6: 'Raku', m: 'MATLAB / Octave', ps1: 'PowerShell',
+   v: 'Verilog', sv: 'SystemVerilog', vhd: 'VHDL', vhdl: 'VHDL',
+ };
++/** `.v` is Verilog or V (vlang) and `.m` is MATLAB/Octave or Objective-C: same content checks as the runner (uip-RUN src/kinds/lang.sh). */
++export function langName(ext, src = '') {
++  if (ext === 'v') return /^\s*(pub\s+)?fn\s|\bprintln\(|^\s*module\s+\w+\s*$/m.test(src) && !/\bendmodule\b/.test(src) ? 'V' : 'Verilog';
++  if (ext === 'm') return /#import|@interface|@implementation|@autoreleasepool|\bNS[A-Z][A-Za-z]+/.test(src) ? 'Objective-C' : 'MATLAB / Octave';
++  return LANGS[ext];
++}
+ const JS_EXTS = ['js', 'mjs', 'cjs', 'ts', 'mts'];
+ const C_EXTS = ['c', 'cc', 'cpp', 'cxx', 'h', 'hpp'];
+ const ENTRY_LIKE = /^(main|index|app|program|hello|solution|run|test)\b/i;
+@@ -216,7 +222,7 @@
+   // an .html report that merely sits in the same folder must not hide it (it used to, so a main.cs could never be picked)
+   const hasHtmlNext = (p) => JS_EXTS.includes(extOf(p)) && paths.some((q) => isHtml(q) && dirOf(q) === dirOf(p));
+   const langApp = (p, current) => {
+-    const ext = extOf(p); const name = LANGS[ext];
++    const ext = extOf(p); const name = langName(ext, readText(p) || '');
+     const { root, entry } = runRoot(p, readText);
+     const lbl = label(`${name} — ${baseOf(p)}`, root);
+     const out = [];

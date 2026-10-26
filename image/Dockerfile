@@ -41,7 +41,7 @@ FROM ${DART_IMAGE} AS src_dart
 FROM ${IPE_IMAGE} AS src_ipe
 
 FROM ${BASE_IMAGE}
-LABEL uip.sandbox.rev="6"
+LABEL uip.sandbox.rev="7"
 # helper scripts (sed: a Windows checkout may have turned the line endings into CRLF)
 COPY fetch-verified.sh /usr/local/bin/fetch-verified
 COPY install-extras.sh /tmp/install-extras.sh
@@ -104,7 +104,7 @@ RUN fetch-verified "https://services.gradle.org/distributions/gradle-${GRADLE_VE
 # ── more languages ───────────────────────────────────────────────────────────────────────────────────────────────────
 # Debian packages. If one name is unavailable on your mirror the others are still installed (one by one).
 RUN set -e; apt-get update; \
-    PKGS="nim ldc gnat gnucobol3 nasm elixir erlang-base ocaml-nox ocaml-findlib sbcl guile-3.0 racket swi-prolog-nox tcl gawk rakudo iverilog ghdl-mcode octave clojure postgresql postgresql-client"; \
+    PKGS="nim ldc gnat gnucobol3 nasm elixir erlang-base ocaml-nox ocaml-findlib sbcl guile-3.0 racket swi-prolog-nox tcl gawk rakudo iverilog ghdl-mcode octave clojure postgresql postgresql-client gobjc libgnustep-base-dev gnustep-make"; \
     apt-get install -y --no-install-recommends $PKGS || { for p in $PKGS; do apt-get install -y --no-install-recommends $p || echo "⚠ skipped $p"; done; }; \
     rm -rf /var/lib/apt/lists/*
 
@@ -113,6 +113,8 @@ ARG ZIG_VERSION=0.13.0
 ARG SCALA_VERSION=3.3.4
 ARG GROOVY_VERSION=4.0.23
 ARG PWSH_VERSION=7.4.6
+ARG V_VERSION=0.5.2
+ARG V_SHA256=
 ARG ZIG_SHA256_X86_64=
 ARG ZIG_SHA256_AARCH64=
 ARG SCALA_SHA256=
@@ -122,7 +124,7 @@ ARG PWSH_SHA256_AARCH64=
 ARG PINS_STRICT=0
 RUN bash /tmp/install-extras.sh && rm -f /tmp/install-extras.sh
 
-ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/share/dotnet:/usr/local/julia/bin:/usr/lib/dart/bin:/opt/gradle/bin:/opt/kotlinc/bin:/opt/zig:/opt/scala3/bin:/opt/groovy/bin:/opt/pwsh:${PATH}" \
+ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/share/dotnet:/usr/local/julia/bin:/usr/lib/dart/bin:/opt/gradle/bin:/opt/kotlinc/bin:/opt/zig:/opt/scala3/bin:/opt/groovy/bin:/opt/pwsh:/opt/v:${PATH}" \
     RUSTUP_HOME=/usr/local/rustup \
     DOTNET_ROOT=/usr/share/dotnet DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
     DOTNET_TieredPGO=0 DOTNET_TC_QuickJitForLoops=1 DOTNET_ReadyToRun=1 DOTNET_EnableWriteXorExecute=0 MSBUILDDISABLENODEREUSE=1 DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=1 DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 POWERSHELL_TELEMETRY_OPTOUT=1 \

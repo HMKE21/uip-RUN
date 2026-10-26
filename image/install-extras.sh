@@ -23,10 +23,15 @@ install_groovy() { fetch-verified "https://archive.apache.org/dist/groovy/${GROO
 install_pwsh()   { fetch-verified "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-${PA}.tar.gz" /tmp/pwsh.tgz "$(pin PWSH_SHA256)" || return $?
                    mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tgz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh; }
 
+install_v()      { fetch-verified "https://github.com/vlang/v/releases/download/${V_VERSION}/v_linux.zip" /tmp/v.zip "${V_SHA256:-}" || return $?
+                   unzip -q /tmp/v.zip -d /opt && chmod -R a+rX /opt/v && chmod 755 /opt/v/v; }
+
 try Zig install_zig
+try V install_v
 try Scala install_scala
 try Groovy install_groovy
 try PowerShell install_pwsh
 [ -x /opt/pwsh/pwsh ] || rm -rf /opt/pwsh
-rm -f /tmp/zig.tar.xz /tmp/scala.tgz /tmp/groovy.zip /tmp/pwsh.tgz
+[ -x /opt/v/v ] || rm -rf /opt/v
+rm -f /tmp/zig.tar.xz /tmp/scala.tgz /tmp/groovy.zip /tmp/pwsh.tgz /tmp/v.zip
 exit 0

@@ -59,6 +59,12 @@ is_prolog() {
   grep -qE ':-|^[a-z][A-Za-z0-9_]*(\(.*\))?[[:space:]]*\.[[:space:]]*$' "$1"
 }
 
+# .v is Verilog or V: a V source has `fn …`, `println(`, or a `module main` line with no ports / semicolon (Verilog's module has `(` or `;`)
+is_vlang() {
+  grep -qE '^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]|\bprintln\(|^[[:space:]]*module[[:space:]]+[A-Za-z_0-9]+[[:space:]]*$' "$1" || return 1
+  ! grep -qE '\bendmodule\b' "$1"
+}
+
 case "${E,,}" in
   # ───────────── scripting ─────────────
   *.js|*.mjs|*.cjs)
@@ -97,6 +103,13 @@ case "${E,,}" in
   *.raku|*.rakumod|*.p6)
     need raku; echo "▶ raku $E"; exec raku "$E" ;;
   *.m)
+    # .m is MATLAB/Octave or Objective-C: Objective-C marks (#import, @interface, NSLog, NSString …) win
+    if grep -qE '#import|@interface|@implementation|@autoreleasepool|\bNS[A-Z][A-Za-z]+' "$E"; then
+      need gcc; need gnustep-config; echo "▶ gcc (Objective-C + GNUstep) $E"
+      OCF=$(gnustep-config --objc-flags | sed 's/-MMD//; s/-MP//')
+      cbuild "objc:$E" "$O/a.out" gcc -pipe $OCF "$E" -o "$O/a.out" $(gnustep-config --base-libs) || exit 1
+      exec "$O/a.out"
+    fi
     need octave-cli; echo "▶ octave $E   (MATLAB / Octave)"; exec octave-cli --quiet "$E" ;;
   *.tsql)
     # T-SQL (SQL Server): no SQL Server in the image, so a built-in interpreter runs a practical subset on in-memory SQLite
@@ -150,6 +163,7 @@ UIP_TSQL_EOF
     exec java $JF -jar "$O/a.jar" ;;
   *.scala)
     need scalac; need scala; need java; echo "▶ scalac $E"
+    mkdir -p "$O/classes"   # scalac (2 and 3) refuses a -d folder that does not exist yet ("… does not exist or is not a directory")
     cbuild "scala:$E" "$O/classes" scalac -d "$O/classes" "$E" || exit 1
     CLS=$(java_main "$O/classes" "$O/classes") || { echo "✗ no main method found (use  @main def run() = …  or  object Main extends App)"; exit 1; }
     echo "▶ scala $CLS"; exec scala -classpath "$O/classes" "$CLS" ;;
@@ -217,6 +231,11 @@ UIP_TSQL_EOF
     need fpc; echo "▶ fpc $E"
     cbuild "pas:$E" "$O/a.out" fpc -v0 -O1 -FU"$O" -o"$O/a.out" "$E" || exit 1
     exec "$O/a.out" ;;
+  *.dpr)
+    # Delphi project file: Free Pascal in Delphi mode compiles console programs ({$APPTYPE CONSOLE}, Writeln, SysUtils …)
+    need fpc; echo "▶ fpc -Mdelphi $E   (Delphi console program on Free Pascal)"
+    cbuild "dpr:$E" "$O/a.out" fpc -v0 -Mdelphi -O1 -FU"$O" -o"$O/a.out" "$E" || exit 1
+    exec "$O/a.out" ;;
   *.asm|*.nasm)
     need nasm; need ld; echo "▶ nasm -f elf64 $E"
     nasm -f elf64 -g -F dwarf "$E" -o "$O/a.o" || exit 1
@@ -260,6 +279,14 @@ UIP_TSQL_EOF
 
   # ───────────── hardware description ─────────────
   *.v|*.sv)
+    # .v is Verilog or V (vlang): V marks (fn …, println(…), a bare "module main" line) win, everything else (incl. an empty file) stays Verilog
+    case "${E,,}" in *.sv) ;; *)
+      if is_vlang "$E"; then
+        need v; echo "▶ v $E"
+        cbuild "v:$E" "$O/a.out" v -o "$O/a.out" "$E" || exit 1
+        exec "$O/a.out"
+      fi ;;
+    esac
     need iverilog; need vvp; echo "▶ iverilog $E"
     if ! iverilog -g2012 -I "$D" -o "$O/a.vvp" "$E" 2> "$O/iv.err"; then
       if grep -q 'Unknown module type' "$O/iv.err"; then   # the design lives in other files of the same folder
