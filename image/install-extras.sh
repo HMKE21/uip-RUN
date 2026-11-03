@@ -2,6 +2,8 @@
 # Optional toolchains (Zig, Scala 3, Groovy, PowerShell). A failed DOWNLOAD only skips that language;
 # a CHECKSUM problem aborts the whole image build (fetch-verified exits with 3).
 set -u
+# a version that was not passed in only skips that tool (the download fails and is reported) instead of aborting the whole image build
+: "${ZIG_VERSION:=}" "${SCALA_VERSION:=}" "${GROOVY_VERSION:=}" "${PWSH_VERSION:=}" "${V_VERSION:=}" "${CODE_SERVER_VERSION:=}"
 A=$(uname -m)
 AU=$(echo "$A" | tr 'a-z' 'A-Z')   # X86_64 / AARCH64 -> picks the pinned checksum of this CPU architecture
 case "$A" in x86_64) PA=x64;; aarch64) PA=arm64;; *) PA=$A;; esac
