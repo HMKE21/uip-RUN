@@ -130,7 +130,7 @@ export async function treeHash(sid) {
 
 /** cloud browser: open an address in the Chromium that is already running (same profile folder = a new tab in that window). argv only, never a shell. */
 export function openUrl(sid, url) {
-  const p = spawn('docker', ['exec', '-u', 'dev', '-e', 'DISPLAY=:99', containerName(sid), 'chromium', '--no-sandbox', '--user-data-dir=/home/dev/.uip-chromium', url], { stdio: 'ignore' });
+  const p = spawn('docker', ['exec', '-u', 'dev', '-e', 'DISPLAY=:99', containerName(sid), 'chromium', '--no-sandbox', '--test-type', '--user-data-dir=/home/dev/.uip-chromium', url], { stdio: 'ignore' });
   p.on('error', () => {});
   setTimeout(() => { try { p.kill(); } catch { /* ignore */ } }, 15_000).unref();
 }
