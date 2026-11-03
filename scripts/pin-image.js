@@ -70,6 +70,8 @@ const DOWNLOADS = [
   { key: 'GROOVY_SHA256', url: GROOVY, publisher: () => sidecar(GROOVY) },
   { key: 'SCALA_SHA256', url: SCALA, publisher: null }, // Scala 3 publishes no checksum file
   { key: 'V_SHA256', url: `https://github.com/vlang/v/releases/download/${v('V_VERSION')}/v_linux.zip`, publisher: null }, // V publishes no checksum file
+  // code-server publishes no checksum file: pinned on first use (compare with the release page once)
+  ...[['x86_64', 'amd64'], ['aarch64', 'arm64']].map(([a, ca]) => ({ key: `CODE_SERVER_SHA256_${a.toUpperCase()}`, url: `https://github.com/coder/code-server/releases/download/v${v('CODE_SERVER_VERSION')}/code-server-${v('CODE_SERVER_VERSION')}-linux-${ca}.tar.gz`, publisher: null })),
   ...['x86_64', 'aarch64'].map((a) => ({ key: `ZIG_SHA256_${a.toUpperCase()}`, url: zigUrl(a), publisher: async () => {
     const idx = JSON.parse(await text('https://ziglang.org/download/index.json'));
     return idx[v('ZIG_VERSION')]?.[`${a}-linux`]?.shasum?.toLowerCase() ?? null;

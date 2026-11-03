@@ -37,6 +37,11 @@ export const cfg = {
 
   maxSessions: int('MAX_SESSIONS', 6),
   maxLifeMs: int('MAX_LIFE_MIN', 60) * 60_000,   // hard limit for one session
+  maxLifeAppMs: int('MAX_LIFE_APP_MIN', 240) * 60_000, // VS Code / cloud browser sessions are worked in for hours (autosave to My PC protects the files)
+  maxSessionsPerUser: int('MAX_SESSIONS_PER_USER', 3), // terminal + VS Code + cloud browser at the same time
+  maxPullMb: int('MAX_PULL_MB', 150),            // largest ZIP "Save to My PC" may bring back from a session
+  shm: String(env.SANDBOX_SHM || '256m'),        // /dev/shm of a container (Chromium crashes with Docker's 64 MB default)
+  screen: String(env.BROWSER_SCREEN || '1366x768'), // default desktop size of the cloud browser (the client sends its own window size)
   idleMs: int('IDLE_MIN', 20) * 60_000,          // no input / preview traffic
   detachedMs: int('DETACHED_MIN', 10) * 60_000,   // browser closed or reloaded: how long the sandbox waits for a reconnect
   // per-user persistent cache volume (npm / composer / pip caches + node_modules / vendor snapshots): repeated runs skip the install
@@ -66,3 +71,13 @@ if (cfg.provider === 'local' && (env.NODE_ENV === 'production' || cfg.previewSch
 // 5000 Flask/ASP.NET · 4200 Angular · 9292 Rack · 4000 Phoenix/Jekyll · 8081/3001/9000/8888/5001/8001 common alternatives
 export const PREVIEW_PORTS = [8000, 5173, 3000, 4173, 8080, 5000, 4200, 9292, 4000, 8081, 3001, 9000, 8888, 5001, 8001];
 export const PROJECT_DIR = '/home/dev/project';
+
+// Fixed container ports of the two "apps" that run a web UI of their own. Published next to the preview ports.
+//   vscode  → code-server (VS Code in the browser)     browser → noVNC (a real Chromium on a virtual screen)
+export const APP_PORTS = { vscode: 13337, browser: 6080 };
+// Sessions opened by the desktop apps (the token's `pid`). They live next to each other and next to a project run:
+// a new session only replaces the previous session of the SAME app, never the student's terminal while VS Code is opened.
+export const APP_PIDS = ['terminal', 'vscode', 'browser'];
+// Folders that the package manager / build tool re-creates: never sent back to My PC (Save to My PC / autosave) and never trashed by the sync.
+// Keep in sync with DriveApiController::SYNC_PRESERVE in Full-API.
+export const HEAVY_DIRS = ['node_modules', 'vendor', '.venv', 'venv', '__pycache__', 'target', '.gradle', '.next', '.nuxt', '.cache', 'obj'];

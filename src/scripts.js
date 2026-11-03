@@ -15,14 +15,16 @@ const read = (f) => readFileSync(fileURLToPath(new URL(f, dir)), 'utf8').replace
  *   laravel · node · python · static · shell                      (original kinds)
  *   lang    — ONE source file (entry) in any supported language: js ts py php java kt scala groovy clj c cpp cs fs vb go rs zig nim d adb cob asm rb pl raku lua r jl m sh ps1 dart hs ml ex erl lisp scm rkt pro tcl awk f90 pas v vhd sql tsql
  *   maven · gradle · dotnet · go · cargo · rails · php · make     (whole projects, built and started with their own tool)
+ *   vscode  — code-server (VS Code in the browser) on port 13337, opened on the project folder
+ *   browser — a real Chromium on a virtual screen, streamed by noVNC on port 6080 (entry = "u:" + base64 of the start URL)
  *   auto    — look at the files and pick (entry given → lang)
  */
-export const KINDS = ['laravel', 'node', 'python', 'static', 'shell', 'lang', 'maven', 'gradle', 'dotnet', 'go', 'cargo', 'rails', 'php', 'make', 'auto'];
+export const KINDS = ['laravel', 'node', 'python', 'static', 'shell', 'lang', 'maven', 'gradle', 'dotnet', 'go', 'cargo', 'rails', 'php', 'make', 'vscode', 'browser', 'auto'];
 
 /** POSIX single-quote a string. */
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-const SOURCES = Object.fromEntries(['laravel', 'node', 'python', 'static', 'shell', 'lang', 'maven', 'gradle', 'dotnet', 'go', 'cargo', 'rails', 'php', 'make'].map((k) => [k, read(`${k}.sh`)]));
+const SOURCES = Object.fromEntries(['laravel', 'node', 'python', 'static', 'shell', 'lang', 'maven', 'gradle', 'dotnet', 'go', 'cargo', 'rails', 'php', 'make', 'vscode', 'browser'].map((k) => [k, read(`${k}.sh`)]));
 const TSQL_PY = read('tsql.py');
 const PRELUDE = read('_prelude.sh').replace('@SHIM_SOURCE@', () => read('browser-shim.cjs'));
 
@@ -45,7 +47,7 @@ const AUTO = [
 ];
 
 function body(kind, ctx) {
-  const { entry, previewUrl, previewDomain, https } = ctx;
+  const { entry, previewUrl, previewDomain, https, screen } = ctx;
   if (kind === 'auto') {
     if (entry) return body('lang', ctx);
     // The prelude is written to a file ONCE and every branch sources it. Repeating it in each branch made the script > 128 KB,
@@ -56,19 +58,21 @@ function body(kind, ctx) {
   return SOURCES[kind]
     .replaceAll('@TSQL_PY@', () => TSQL_PY)
     .replaceAll('@ENTRY@', () => shq(entry))
+    .replaceAll('@SCREEN@', () => shq(screen))
     .replaceAll('@PREVIEW_URL@', () => shq(previewUrl))
     .replaceAll('@ALLOWED_HOSTS@', () => shq(`.${previewDomain.replace(/:\d+$/, '')}`))
     .replaceAll('@HTTPS_EXPORTS@', () => (https ? 'export HTTPS=on SESSION_SECURE_COOKIE=true SESSION_SAME_SITE=none' : ''));
 }
 
 /**
- * @param {{kind: string, entry?: string, previewUrl: string, previewDomain: string}} o
+ * @param {{kind: string, entry?: string, previewUrl: string, previewDomain: string, screen?: string}} o
  * @returns {string} bash script text
  */
-export function buildScript({ kind, entry = '', previewUrl, previewDomain }) {
+export function buildScript({ kind, entry = '', previewUrl, previewDomain, screen = '1366x768' }) {
+  if (!/^\d{3,4}x\d{3,4}$/.test(screen)) throw new Error('bad screen size');
   if (!KINDS.includes(kind)) throw new Error(`unknown kind: ${kind}`);
   const https = /^https:/i.test(previewUrl);
-  const inner = `${PRELUDE}\n${body(kind, { entry, previewUrl, previewDomain, https })}`.trim();
+  const inner = `${PRELUDE}\n${body(kind, { entry, previewUrl, previewDomain, https, screen })}`.trim();
   return [
     'cd /home/dev/project',
     `bash -c ${shq(inner)}`,

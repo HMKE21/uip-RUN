@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PREVIEW_PORTS, PROJECT_DIR } from './config.js';
+import { PREVIEW_PORTS, APP_PORTS, HEAVY_DIRS, PROJECT_DIR } from './config.js';
 import { parseListening, cleanEnv } from './proc.js';
 
 export const name = 'local';
@@ -13,7 +13,7 @@ const proj = (sid) => join(root(sid), 'project');
 const procs = new Map(); // sid -> pty
 
 export async function createContainer(sid, _userId) { await mkdir(proj(sid), { recursive: true }); }
-export async function portMap() { return Object.fromEntries(PREVIEW_PORTS.map((p) => [p, p])); }
+export async function portMap() { return Object.fromEntries([...PREVIEW_PORTS, ...Object.values(APP_PORTS)].map((p) => [p, p])); }
 export async function uploadZip(sid, zipPath) {
   await new Promise((res, rej) => execFile('unzip', ['-q', '-o', zipPath, '-d', proj(sid)], (e) => (e && e.code !== 1 ? rej(e) : res())));
 }
@@ -33,3 +33,17 @@ export async function diskUsage() { return {}; }
 export async function cacheUsageMb() { return 0; }
 export async function purgeCache() {}
 export async function ensureReady() { console.warn('⚠ SANDBOX_PROVIDER=local: projects run on this machine WITHOUT isolation. Development only.'); }
+
+// "Save to My PC" support (development only — same behaviour as the docker provider, on this machine)
+const sh = (sid, cmd, opts = {}) => new Promise((resolve, reject) => execFile('sh', ['-c', cmd], { cwd: proj(sid), maxBuffer: 512 * 1024 * 1024, encoding: 'buffer', ...opts }, (e, out) => (e ? reject(e) : resolve(out))));
+export async function exportZip(sid, maxBytes) {
+  const ex = HEAVY_DIRS.flatMap((d) => [`'${d}/*'`, `'*/${d}/*'`]).join(' ');
+  const out = await sh(sid, `zip -qr -X - . -x ${ex}`);
+  if (out.length > maxBytes) throw new Error('The project is too large to save back.');
+  return out;
+}
+export async function treeHash(sid) {
+  const prune = HEAVY_DIRS.map((d) => `-name '${d}'`).join(' -o ');
+  return String(await sh(sid, `find . \\( ${prune} \\) -prune -o -type f -printf '%p\\t%s\\t%T@\\n' | LC_ALL=C sort | sha1sum | cut -d' ' -f1`)).trim();
+}
+export function openUrl() { /* the local provider has no browser */ }

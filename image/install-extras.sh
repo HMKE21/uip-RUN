@@ -26,12 +26,18 @@ install_pwsh()   { fetch-verified "https://github.com/PowerShell/PowerShell/rele
 install_v()      { fetch-verified "https://github.com/vlang/v/releases/download/${V_VERSION}/v_linux.zip" /tmp/v.zip "${V_SHA256:-}" || return $?
                    unzip -q /tmp/v.zip -d /opt && chmod -R a+rX /opt/v && chmod 755 /opt/v/v; }
 
+install_code_server() { local CA; case "$A" in x86_64) CA=amd64;; aarch64) CA=arm64;; *) return 1;; esac
+                   fetch-verified "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${CA}.tar.gz" /tmp/code-server.tgz "$(pin CODE_SERVER_SHA256)" || return $?
+                   mkdir -p /opt/code-server && tar -xzf /tmp/code-server.tgz -C /opt/code-server --strip-components=1 && ln -sf /opt/code-server/bin/code-server /usr/local/bin/code-server; }
+
 try Zig install_zig
+try code-server install_code_server
 try V install_v
 try Scala install_scala
 try Groovy install_groovy
 try PowerShell install_pwsh
 [ -x /opt/pwsh/pwsh ] || rm -rf /opt/pwsh
 [ -x /opt/v/v ] || rm -rf /opt/v
-rm -f /tmp/zig.tar.xz /tmp/scala.tgz /tmp/groovy.zip /tmp/pwsh.tgz /tmp/v.zip
+[ -x /opt/code-server/bin/code-server ] || rm -rf /opt/code-server /usr/local/bin/code-server
+rm -f /tmp/code-server.tgz /tmp/zig.tar.xz /tmp/scala.tgz /tmp/groovy.zip /tmp/pwsh.tgz /tmp/v.zip
 exit 0

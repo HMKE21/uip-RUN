@@ -7,7 +7,7 @@ import net from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { cfg, PREVIEW_PORTS, PROJECT_DIR } from './config.js';
+import { cfg, PREVIEW_PORTS, APP_PORTS, HEAVY_DIRS, PROJECT_DIR } from './config.js';
 import { parseListening, cleanEnv, parseDockerSize } from './proc.js';
 
 const run = promisify(execFile);
@@ -39,7 +39,7 @@ export async function createContainer(sid, userId) {
     '--ulimit', 'nofile=4096:4096', '--ulimit', 'core=0',
     '--ulimit', `fsize=${2 * 1024 ** 3}:${2 * 1024 ** 3}`, // no single file above 2 GiB (the disk watchdog catches many smaller ones)
     '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',       // the egress firewall only covers IPv4
-    '--hostname', 'sandbox',
+    '--hostname', 'sandbox', '--shm-size', cfg.shm,
     // defence in depth (Docker Desktop / no firewall): the usual names for "the host" and the cloud metadata service resolve to nothing useful
     '--add-host', 'host.docker.internal:127.0.0.1', '--add-host', 'gateway.docker.internal:127.0.0.1', '--add-host', 'metadata.google.internal:127.0.0.1',
     ...cfg.dns.flatMap((d) => ['--dns', d]),
@@ -47,7 +47,7 @@ export async function createContainer(sid, userId) {
     '--network', cfg.network,
     ...(cfg.runtime ? ['--runtime', cfg.runtime] : []),
     ...(cache ? ['-v', `${cache}:${CACHE_DIR}`, '-e', `UIP_PCACHE=${CACHE_DIR}`, '-e', `UIP_CACHE_MAX_MB=${cfg.cacheMaxMb}`] : []),
-    ...PREVIEW_PORTS.flatMap((p) => ['-p', `127.0.0.1::${p}`]),
+    ...[...PREVIEW_PORTS, ...Object.values(APP_PORTS)].flatMap((p) => ['-p', `127.0.0.1::${p}`]),
     cfg.image, 'sleep', 'infinity',
   ]);
 }
@@ -97,6 +97,42 @@ export function spawnTerminal(pty, sid, { cols, rows }) {
   return pty.spawn('docker', ['exec', '-it', '-u', 'dev', '-w', PROJECT_DIR, '-e', 'TERM=xterm-256color', containerName(sid), 'bash', '/tmp/run.sh'], {
     name: 'xterm-256color', cols: cols || 100, rows: rows || 28, env: cleanEnv(), // never the gateway's own environment (it holds the JWT secret)
   });
+}
+
+// Folders that are re-created by the package manager / build tool: they are never sent back to My PC ("Save to My PC" / autosave).
+// The same list is preserved (never moved to the recycle bin) by the sync endpoint of Full-API.
+const ZIP_EXCLUDE = HEAVY_DIRS.flatMap((d) => [`'${d}/*'`, `'*/${d}/*'`]).join(' ');
+const FIND_PRUNE = HEAVY_DIRS.map((d) => `-name '${d}'`).join(' -o ');
+
+/** the project folder of a session as ONE zip (built inside the container, streamed out through the docker client). Rejects past maxBytes. */
+export function exportZip(sid, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('docker', ['exec', '-u', 'dev', '-w', PROJECT_DIR, containerName(sid), 'sh', '-c', `zip -qr -X - . -x ${ZIP_EXCLUDE}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const chunks = []; let n = 0; let over = false;
+    const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('Saving took too long.')); }, 120_000);
+    p.stdout.on('data', (d) => { n += d.length; if (n > maxBytes) { over = true; p.kill('SIGKILL'); } else chunks.push(d); });
+    p.on('error', (e) => { clearTimeout(timer); reject(e); });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      if (over) return reject(new Error(`The project is larger than ${Math.round(maxBytes / 1048576)} MB (without node_modules / vendor), so it cannot be saved back.`));
+      if (code !== 0) return reject(new Error('Nothing to save yet.'));
+      resolve(Buffer.concat(chunks));
+    });
+  });
+}
+
+/** cheap "did anything change?" fingerprint of the project folder (names + sizes + mtimes, heavy folders skipped) */
+export async function treeHash(sid) {
+  const { stdout } = await docker(['exec', '-u', 'dev', '-w', PROJECT_DIR, containerName(sid), 'sh', '-c',
+    `find . \\( ${FIND_PRUNE} \\) -prune -o -type f -printf '%p\\t%s\\t%T@\\n' | LC_ALL=C sort | sha1sum | cut -d' ' -f1`], { timeout: 30_000 });
+  return stdout.trim();
+}
+
+/** cloud browser: open an address in the Chromium that is already running (same profile folder = a new tab in that window). argv only, never a shell. */
+export function openUrl(sid, url) {
+  const p = spawn('docker', ['exec', '-u', 'dev', '-e', 'DISPLAY=:99', containerName(sid), 'chromium', '--no-sandbox', '--user-data-dir=/home/dev/.uip-chromium', url], { stdio: 'ignore' });
+  p.on('error', () => {});
+  setTimeout(() => { try { p.kill(); } catch { /* ignore */ } }, 15_000).unref();
 }
 
 /** killing the `docker exec` client does not stop what it started inside the container */

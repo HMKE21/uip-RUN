@@ -8,6 +8,7 @@
 # Haskell · OCaml · Elixir · Erlang · Common Lisp · Scheme (Guile) · Racket · Prolog · Tcl · AWK
 # Fortran · Pascal · Verilog (iverilog) · VHDL (ghdl) · SQL on SQLite / MariaDB (MySQL) / PostgreSQL
 #
+# VS Code in the browser (code-server) and a cloud browser (Chromium on a virtual screen, streamed by noVNC) for the desktop apps.
 # Missing something? Add a line below and rebuild. Too big for your server? Delete the blocks you don't need —
 # a run whose toolchain is missing prints "'xyz' is not installed in this sandbox image" instead of failing mysteriously.
 # The big downloads at the end (Zig, Scala, Groovy, PowerShell) are optional: if one cannot be DOWNLOADED the build carries on and
@@ -41,7 +42,7 @@ FROM ${DART_IMAGE} AS src_dart
 FROM ${IPE_IMAGE} AS src_ipe
 
 FROM ${BASE_IMAGE}
-LABEL uip.sandbox.rev="7"
+LABEL uip.sandbox.rev="8"
 # helper scripts (sed: a Windows checkout may have turned the line endings into CRLF)
 COPY fetch-verified.sh /usr/local/bin/fetch-verified
 COPY install-extras.sh /tmp/install-extras.sh
@@ -108,13 +109,23 @@ RUN set -e; apt-get update; \
     apt-get install -y --no-install-recommends $PKGS || { for p in $PKGS; do apt-get install -y --no-install-recommends $p || echo "⚠ skipped $p"; done; }; \
     rm -rf /var/lib/apt/lists/*
 
-# Zig, Scala 3, Groovy, PowerShell — downloaded; each block is optional (a failed download only skips that language)
+# Cloud browser: Chromium on a virtual screen (Xvfb), shown through x11vnc + noVNC/websockify, fonts for Arabic / emoji.
+# One by one if a name is missing on your mirror: the rest still installs and only the browser kind reports "not installed".
+RUN set -e; apt-get update; \
+    PKGS="chromium xvfb x11vnc novnc websockify openbox fonts-noto-core fonts-noto-color-emoji fonts-liberation"; \
+    apt-get install -y --no-install-recommends $PKGS || { for p in $PKGS; do apt-get install -y --no-install-recommends $p || echo "⚠ skipped $p"; done; }; \
+    rm -rf /var/lib/apt/lists/*
+
+# Zig, Scala 3, Groovy, PowerShell, code-server — downloaded; each block is optional (a failed download only skips that language)
 ARG ZIG_VERSION=0.13.0
 ARG SCALA_VERSION=3.3.4
 ARG GROOVY_VERSION=4.0.23
 ARG PWSH_VERSION=7.4.6
 ARG V_VERSION=0.5.2
 ARG V_SHA256=
+ARG CODE_SERVER_VERSION=4.96.4
+ARG CODE_SERVER_SHA256_X86_64=
+ARG CODE_SERVER_SHA256_AARCH64=
 ARG ZIG_SHA256_X86_64=
 ARG ZIG_SHA256_AARCH64=
 ARG SCALA_SHA256=

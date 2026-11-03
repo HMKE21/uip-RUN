@@ -9,7 +9,7 @@ import { writeFile, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import pty from '@lydell/node-pty';
-import { cfg, PREVIEW_PORTS } from './config.js';
+import { cfg, PREVIEW_PORTS, APP_PORTS, APP_PIDS } from './config.js';
 import { verifyToken, initJtiStore, pruneJtiStore } from './auth.js';
 import { buildScript, KINDS } from './scripts.js';
 import { inspectZip } from './zipcheck.js';
@@ -22,6 +22,12 @@ const OUT_BUFFER = 64 * 1024;
 const MAX_BUFFERED = 2 * 1024 * 1024; // bytes queued for one browser before the terminal is paused
 const MAX_TEXT_FRAME = 64 * 1024;     // control messages are tiny; only the single project zip is binary
 const PORT_ORDER = PREVIEW_PORTS;
+const PREVIEW_SET = new Set(PREVIEW_PORTS);
+const KNOWN_PORTS = new Set([...PREVIEW_PORTS, ...Object.values(APP_PORTS)]);
+// VS Code and the cloud browser each have ONE fixed port to show; every other kind picks the first dev-server port that opens
+const previewPortsOf = (s) => (APP_PORTS[s.kind] ? [APP_PORTS[s.kind]] : PREVIEW_PORTS);
+const lifeMsOf = (s) => (APP_PORTS[s.kind] ? cfg.maxLifeAppMs : cfg.maxLifeMs);
+const validScreen = (v) => { const m = /^(\d{3,4})x(\d{3,4})$/.exec(String(v || '')); return m && Number(m[1]) >= 640 && Number(m[1]) <= 2560 && Number(m[2]) >= 480 && Number(m[2]) <= 1600 ? v : cfg.screen; };
 // These kinds run apps that validate the Host header (Vite, Django, Rails…), so the proxy presents the request as
 // http://localhost:<port> and translates redirects back. Laravel keeps the real host so the URLs it generates are right.
 const REWRITE_HOST = new Set(['node', 'python', 'rails']);
@@ -65,7 +71,8 @@ const noteAuthFail = (ip) => {
 };
 
 // ---------------------------------------------------------------- sessions
-const previewUrlFor = (sid) => `${cfg.previewScheme}://${sid}.${cfg.previewDomain}`;
+// <sid>.<domain> = the session's main app · p<port>-<sid>.<domain> = another dev-server port of the same container (VS Code users start their own servers)
+const previewUrlFor = (sid, port = null) => `${cfg.previewScheme}://${port ? `p${port}-` : ''}${sid}.${cfg.previewDomain}`;
 
 async function destroy(s, reason) {
   if (!sessions.delete(s.sid)) return;
@@ -129,32 +136,44 @@ function watchPorts(s) {
 }
 async function pollPorts(s) {
   {
-    const up = (await dk.listening(s.sid)).filter((u) => PREVIEW_PORTS.includes(u.port));
+    const mine = previewPortsOf(s);
+    const up = (await dk.listening(s.sid)).filter((u) => KNOWN_PORTS.has(u.port));
     for (const u of up) {
-      if (u.loopbackOnly && !s.seen.has(u.port)) {
+      if (u.loopbackOnly && !s.seen.has(u.port) && (mine.includes(u.port) || PREVIEW_SET.has(u.port))) {
         s.seen.add(u.port);
-        send(s.ws, { t: 'hint', text: `Port ${u.port} only listens on 127.0.0.1, so it can't be previewed. Start the server on 0.0.0.0 (e.g. --host 0.0.0.0).` });
+        if (!APP_PORTS[s.kind] || !mine.includes(u.port)) send(s.ws, { t: 'hint', text: `Port ${u.port} only listens on 127.0.0.1, so it can't be previewed. Start the server on 0.0.0.0 (e.g. --host 0.0.0.0).` });
       }
     }
-    const open = up.filter((u) => !u.loopbackOnly).map((u) => u.port).sort((a, b) => PORT_ORDER.indexOf(a) - PORT_ORDER.indexOf(b));
+    const open = up.filter((u) => !u.loopbackOnly && mine.includes(u.port)).map((u) => u.port).sort((a, b) => PORT_ORDER.indexOf(a) - PORT_ORDER.indexOf(b));
     const stillUp = s.previewPort && open.includes(s.previewPort);
     if (!stillUp && open.length) {
       s.previewPort = open[0];
       send(s.ws, { t: 'preview', url: previewUrlFor(s.sid), port: s.previewPort });
     } else if (!stillUp && s.previewPort) { s.previewPort = null; send(s.ws, { t: 'preview', url: null }); }
+    // VS Code: the dev servers the student started (npm run dev, php artisan serve…) each get their own address
+    if (APP_PORTS[s.kind]) {
+      const extra = up.filter((u) => !u.loopbackOnly && PREVIEW_SET.has(u.port)).map((u) => u.port).sort((a, b) => a - b);
+      const key = extra.join(',');
+      if (key !== s.extraKey) { s.extraKey = key; send(s.ws, { t: 'ports', ports: extra.map((port) => ({ port, url: previewUrlFor(s.sid, port) })) }); }
+    }
   }
 }
 
 async function startSession(ws, claims, init, zip) {
   if (!netGuard.ok) { log('session_refused', { user: claims.sub, reason: netGuard.why }); send(ws, { t: 'error', text: 'The sandbox is temporarily unavailable. Please try again later and tell the administrator if it continues.' }); return null; }
   const t0 = Date.now();
-  if (t0 - (lastStart.get(claims.sub) || 0) < cfg.sessionCooldownMs) { send(ws, { t: 'error', text: 'Please wait a moment before starting again.' }); return null; }
-  lastStart.set(claims.sub, t0);
-  for (const old of [...sessions.values()]) if (old.userId === claims.sub) await destroy(old, 'replaced by a new run');
+  const startKey = `${claims.sub}:${claims.pid}`; // the terminal and VS Code may be started within the same second
+  if (t0 - (lastStart.get(startKey) || 0) < cfg.sessionCooldownMs) { send(ws, { t: 'error', text: 'Please wait a moment before starting again.' }); return null; }
+  lastStart.set(startKey, t0);
+  // A new run replaces the previous run of the same app / project. Desktop apps (terminal, VS Code, cloud browser) live side by side and
+  // next to a project run; two project runs still replace each other like before.
+  const isApp = APP_PIDS.includes(claims.pid);
+  for (const old of [...sessions.values()]) if (old.userId === claims.sub && (old.projectId === claims.pid || (!isApp && !APP_PIDS.includes(old.projectId)))) await destroy(old, 'replaced by a new run');
+  if ([...sessions.values()].filter((x) => x.userId === claims.sub).length >= cfg.maxSessionsPerUser) { send(ws, { t: 'error', text: `You already have ${cfg.maxSessionsPerUser} environments open (terminal, VS Code, browser, project run). Close one first.` }); return null; }
   // capacity is checked AFTER the old session is gone and in the same tick as sessions.set(): two parallel starts cannot both slip past the limit
   if (sessions.size >= cfg.maxSessions) { send(ws, { t: 'error', text: 'The sandbox is busy right now (all environments are in use). Try again in a few minutes.' }); return null; }
   const sid = randomBytes(16).toString('hex');
-  const s = { sid, userId: claims.sub, projectId: claims.pid, ws, term: null, out: '', createdAt: Date.now(), lastActive: Date.now(), detachedAt: 0, previewPort: null, seen: new Set(), ports: {}, poll: null, kind: init.kind };
+  const s = { sid, userId: claims.sub, projectId: claims.pid, ws, term: null, extraKey: '', out: '', createdAt: Date.now(), lastActive: Date.now(), detachedAt: 0, previewPort: null, seen: new Set(), ports: {}, poll: null, kind: init.kind };
   sessions.set(sid, s);
   log('session_start', { sid, user: claims.sub, project: claims.pid, kind: init.kind });
   try {
@@ -165,9 +184,9 @@ async function startSession(ws, claims, init, zip) {
     const tmp = path.join(os.tmpdir(), `uip-${sid}.zip`);
     await writeFile(tmp, zip, { mode: 0o600 });
     try { await dk.uploadZip(sid, tmp); } finally { unlink(tmp).catch(() => {}); }
-    await dk.writeScript(sid, buildScript({ kind: init.kind, entry: init.entry, previewUrl: previewUrlFor(sid), previewDomain: cfg.previewDomain }));
+    await dk.writeScript(sid, buildScript({ kind: init.kind, entry: init.entry, previewUrl: previewUrlFor(sid), previewDomain: cfg.previewDomain, screen: validScreen(init.screen) }));
     send(ws, { t: 'status', text: 'Running' });
-    send(ws, { t: 'session', id: sid, kind: init.kind, expiresInMs: cfg.maxLifeMs });
+    send(ws, { t: 'session', id: sid, kind: init.kind, expiresInMs: lifeMsOf(s) });
     startTerminal(s, init.cols, init.rows);
     watchPorts(s);
     return s;
@@ -183,7 +202,7 @@ async function startSession(ws, claims, init, zip) {
 setInterval(() => {
   const now = Date.now();
   for (const s of sessions.values()) {
-    if (now - s.createdAt > cfg.maxLifeMs) destroy(s, 'time limit reached').catch(() => {});
+    if (now - s.createdAt > lifeMsOf(s)) destroy(s, 'time limit reached').catch(() => {});
     else if (!s.ws && now - s.detachedAt > cfg.detachedMs) destroy(s, 'disconnected').catch(() => {});
     else if (now - s.lastActive > cfg.idleMs) destroy(s, 'idle for too long').catch(() => {});
   }
@@ -221,12 +240,13 @@ setInterval(async () => {
 }, cfg.diskWatchMs).unref();
 
 // ---------------------------------------------------------------- preview reverse proxy
-function previewSid(hostHeader) {
+/** <sid>.<domain> or p<port>-<sid>.<domain>  ->  { sid, port|null }, else null */
+function previewTarget(hostHeader) {
   const host = String(hostHeader || '').toLowerCase();
   const suffix = `.${cfg.previewDomain}`;
   if (!host.endsWith(suffix)) return null;
-  const label = host.slice(0, -suffix.length);
-  return /^[a-f0-9]{32}$/.test(label) ? label : null;
+  const m = /^(?:p(\d{2,5})-)?([a-f0-9]{32})$/.exec(host.slice(0, -suffix.length));
+  return m ? { sid: m[2], port: m[1] ? Number(m[1]) : null } : null;
 }
 
 /** Who opens the preview link: the first few distinct client IPs per session are logged, so a link that was shared shows up in the log. */
@@ -237,35 +257,40 @@ function noteViewer(s, ip) {
   log('preview_viewer', { sid: s.sid, user: s.userId, ip, distinct: s.viewers.size });
 }
 
-function upstreamOf(sid) {
+/** where a preview request goes. `want` = the container port asked for by a p<port>-<sid> host (only dev-server ports of a live session). */
+function upstreamOf(sid, want) {
   const s = sessions.get(sid);
   if (!s) return {};
   s.lastActive = Date.now();
-  return { s, port: s.previewPort ? s.ports[s.previewPort] : undefined };
+  if (want) {
+    if (!PREVIEW_SET.has(want) || !s.ports[want]) return { s, port: undefined };
+    return { s, port: s.ports[want], t: { cport: want, secondary: want !== s.previewPort } };
+  }
+  return { s, port: s.previewPort ? s.ports[s.previewPort] : undefined, t: { cport: s.previewPort, secondary: false } };
 }
 
-/** header rewriting for kinds whose dev servers insist on a localhost Host header */
-function mapRequestHeader(s, key, value) {
-  if (!REWRITE_HOST.has(s.kind)) return value;
+/** header rewriting for kinds whose dev servers insist on a localhost Host header (and for every extra port of a VS Code session) */
+function mapRequestHeader(s, key, value, t) {
+  if (!REWRITE_HOST.has(s.kind) && !t.secondary) return value;
   const k = key.toLowerCase();
-  const local = `http://localhost:${s.previewPort}`;
-  if (k === 'host') return `localhost:${s.previewPort}`;
-  if (k === 'origin' || k === 'referer') return String(value).replace(previewUrlFor(s.sid), local);
+  const local = `http://localhost:${t.cport}`;
+  if (k === 'host') return `localhost:${t.cport}`;
+  if (k === 'origin' || k === 'referer') return String(value).replace(previewUrlFor(s.sid, t.secondary ? t.cport : null), local);
   return value;
 }
-function mapLocation(s, value) {
-  if (!REWRITE_HOST.has(s.kind)) return value;
-  return String(value).replace(new RegExp(`^http://(localhost|127\\.0\\.0\\.1):${s.previewPort}`), previewUrlFor(s.sid));
+function mapLocation(s, value, t) {
+  if (!REWRITE_HOST.has(s.kind) && !t.secondary) return value;
+  return String(value).replace(new RegExp(`^http://(localhost|127\\.0\\.0\\.1):${t.cport}`), previewUrlFor(s.sid, t.secondary ? t.cport : null));
 }
 
 const frameAncestors = () => `frame-ancestors ${cfg.allowedOrigins.join(' ')}`;
 
 const NOINDEX = 'noindex, nofollow, noarchive'; // a preview link must never end up in a search engine
 
-function proxyHttp(sid, req, res) {
+function proxyHttp(sid, want, req, res) {
   const ip = clientIp(req);
   if (previewBlocked(ip)) { res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '60' }); return res.end('Too many requests.'); }
-  const { s, port } = upstreamOf(sid);
+  const { s, port, t } = upstreamOf(sid, want);
   if (!s) { notePreviewMiss(ip); res.writeHead(404, { 'content-type': 'text/plain', 'x-robots-tag': NOINDEX }); return res.end('This sandbox has ended.'); }
   noteViewer(s, ip);
   if (!port) {
@@ -273,7 +298,7 @@ function proxyHttp(sid, req, res) {
     return res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2"><body style="font:14px system-ui;color:#555;display:grid;place-items:center;height:100vh;margin:0">Starting the app… (installing dependencies can take a few minutes — watch the terminal)</body>');
   }
   const headers = {};
-  for (const [k, v] of Object.entries(req.headers)) headers[k] = Array.isArray(v) ? v : mapRequestHeader(s, k, v);
+  for (const [k, v] of Object.entries(req.headers)) headers[k] = Array.isArray(v) ? v : mapRequestHeader(s, k, v, t);
   headers['x-forwarded-host'] = req.headers.host; headers['x-forwarded-proto'] = cfg.previewScheme;
   const up = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers }, (ur) => {
     const h = { ...ur.headers };
@@ -281,7 +306,7 @@ function proxyHttp(sid, req, res) {
     h['content-security-policy'] = [].concat(h['content-security-policy'] || [], frameAncestors()); // …and only by it
     h['x-robots-tag'] = NOINDEX;
     if (cfg.previewScheme === 'https') h['content-security-policy'].push('upgrade-insecure-requests');
-    if (h.location) h.location = mapLocation(s, h.location);
+    if (h.location) h.location = mapLocation(s, h.location, t);
     if (h['set-cookie']) h['set-cookie'] = hostOnlyCookies(h['set-cookie']);
     if (!h['referrer-policy']) h['referrer-policy'] = 'same-origin'; // the preview URL (contains the session id) must not leak to third parties
     res.writeHead(ur.statusCode || 502, h);
@@ -297,11 +322,11 @@ function proxyHttp(sid, req, res) {
   req.pipe(up);
 }
 
-function proxyUpgrade(sid, req, socket, head) {
+function proxyUpgrade(sid, want, req, socket, head) {
   if (String(req.headers.upgrade || '').toLowerCase() !== 'websocket') return socket.destroy();
   const ip = clientIp(req);
   if (previewBlocked(ip)) return socket.destroy();
-  const { s, port } = upstreamOf(sid);
+  const { s, port, t } = upstreamOf(sid, want);
   if (!s) notePreviewMiss(ip);
   if (!s || !port) return socket.destroy();
   noteViewer(s, ip);
@@ -309,11 +334,13 @@ function proxyUpgrade(sid, req, socket, head) {
   s.upgrades = (s.upgrades || 0) + 1;
   const up = net.connect(port, '127.0.0.1', () => {
     const lines = [`${req.method} ${req.url} HTTP/1.1`];
-    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${mapRequestHeader(s, req.rawHeaders[i], req.rawHeaders[i + 1])}`);
+    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${mapRequestHeader(s, req.rawHeaders[i], req.rawHeaders[i + 1], t)}`);
     up.write(`${lines.join('\r\n')}\r\n\r\n`);
     if (head?.length) up.write(head);
     socket.pipe(up).pipe(socket);
   });
+  // a long-lived WebSocket (VS Code, the cloud browser) is the ONLY traffic of an active person: it must keep the session from going idle
+  socket.on('data', () => { s.lastActive = Date.now(); });
   let closed = false;
   const done = () => { if (closed) return; closed = true; s.upgrades = Math.max(0, (s.upgrades || 1) - 1); up.destroy(); socket.destroy(); };
   up.on('error', done); up.on('close', done);
@@ -323,8 +350,8 @@ function proxyUpgrade(sid, req, socket, head) {
 // ---------------------------------------------------------------- HTTP + WebSocket entry points
 const server = http.createServer((req, res) => {
   try {
-    const sid = previewSid(req.headers.host);
-    if (sid) return proxyHttp(sid, req, res);
+    const pv = previewTarget(req.headers.host);
+    if (pv) return proxyHttp(pv.sid, pv.port, req, res);
     // no session counts here: this endpoint is reachable from the Internet through the reverse proxy
     if (req.url === '/healthz') { res.writeHead(netGuard.ok ? 200 : 503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: netGuard.ok })); }
     res.writeHead(404, { 'content-type': 'text/plain' }); res.end('uip-sandbox');
@@ -337,8 +364,8 @@ server.on('clientError', (_e, socket) => { try { socket.end('HTTP/1.1 400 Bad Re
 const wss = new WebSocketServer({ noServer: true, maxPayload: cfg.maxZipBytes + 4096 });
 
 server.on('upgrade', (req, socket, head) => {
-  const sid = previewSid(req.headers.host);
-  if (sid) { try { return proxyUpgrade(sid, req, socket, head); } catch { return socket.destroy(); } }
+  const pv = previewTarget(req.headers.host);
+  if (pv) { try { return proxyUpgrade(pv.sid, pv.port, req, socket, head); } catch { return socket.destroy(); } }
   let url;
   try { url = new URL(req.url, 'http://x'); } catch { return socket.destroy(); }
   if (url.pathname !== '/ws') return socket.destroy();
@@ -402,13 +429,13 @@ wss.on('connection', (ws, req, claims) => {
           if (!old) return send(ws, { t: 'nosession' });
           if (old.ws && old.ws !== ws) { send(old.ws, { t: 'closed', reason: 'opened in another tab' }); try { old.ws.close(); } catch { /* ignore */ } }
           old.ws = ws; old.detachedAt = 0; session = old;
-          send(ws, { t: 'session', id: old.sid, kind: old.kind, resumed: true, expiresInMs: Math.max(0, cfg.maxLifeMs - (Date.now() - old.createdAt)) });
+          send(ws, { t: 'session', id: old.sid, kind: old.kind, resumed: true, expiresInMs: Math.max(0, lifeMsOf(old) - (Date.now() - old.createdAt)) });
           if (old.out) send(ws, { t: 'out', d: old.out });
           if (old.previewPort) send(ws, { t: 'preview', url: previewUrlFor(old.sid), port: old.previewPort });
           try { old.term?.resize(cols, rows); } catch { /* ignore */ }
           return;
         }
-        pending = { kind, entry: m.entry || '', cols, rows };
+        pending = { kind, entry: m.entry || '', cols, rows, screen: validScreen(m.screen) };
         return send(ws, { t: 'send-files' });
       }
       if (!session) return;
@@ -421,6 +448,26 @@ wss.on('connection', (ws, req, claims) => {
           send(ws, { t: 'out', d: '\r\n\x1b[90m— restarting —\x1b[0m\r\n' });
           await restartTerminal(session, m.cols, m.rows);
         } finally { busy = false; }
+      } else if (m.t === 'hash') {
+        // "did anything change since the last save?" — cheap, so the client can ask every few seconds
+        const id = Number(m.id) || 0;
+        if (session.hashing) return;
+        session.hashing = true;
+        try { send(ws, { t: 'hash', id, h: await dk.treeHash(session.sid) }); } catch { send(ws, { t: 'hash', id, h: '' }); } finally { session.hashing = false; }
+      } else if (m.t === 'pull') {
+        // the project folder as one ZIP (heavy folders skipped) — "Save to My PC", autosave, cloud-browser downloads
+        const id = Number(m.id) || 0;
+        if (session.pulling) return send(ws, { t: 'pull-error', id, text: 'A save is already running.' });
+        session.pulling = true;
+        try {
+          const buf = await dk.exportZip(session.sid, cfg.maxPullMb * 1024 * 1024);
+          send(ws, { t: 'pull-data', id, size: buf.length });
+          ws.send(buf, { binary: true });
+        } catch (e) { send(ws, { t: 'pull-error', id, text: String(e.message || 'Could not read the project.').slice(0, 200) }); } finally { session.pulling = false; }
+      } else if (m.t === 'open-url' && session.kind === 'browser') {
+        // a new tab in the cloud browser; the address is checked here again (the client is not trusted) and handed over as one argv entry
+        const u = String(m.url || '');
+        if (u.length <= 2000 && /^https?:\/\/[^\s]+$/i.test(u)) dk.openUrl(session.sid, u);
       } else if (m.t === 'stop') await destroy(session, 'stopped');
     } catch { busy = false; send(ws, { t: 'error', text: 'Bad request.' }); }
   });
