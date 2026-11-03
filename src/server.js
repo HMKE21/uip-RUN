@@ -303,7 +303,10 @@ function proxyHttp(sid, want, req, res) {
   const up = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers }, (ur) => {
     const h = { ...ur.headers };
     delete h['x-frame-options']; // the preview is meant to be framed by the IDE…
-    h['content-security-policy'] = [].concat(h['content-security-policy'] || [], frameAncestors()); // …and only by it
+    // …and only by it. An upstream (code-server, a dev server) may send its own `frame-ancestors` (often 'self'); two CSP headers are
+    // INTERSECTED by the browser, so that one alone would make the frame a blank "sad page". Drop the upstream's directive, keep the rest.
+    const upstreamCsp = [].concat(h['content-security-policy'] || []).map((v) => String(v).replace(/(^|;)\s*frame-ancestors[^;]*/gi, '$1').replace(/^\s*;\s*/, '').trim()).filter(Boolean);
+    h['content-security-policy'] = [...upstreamCsp, frameAncestors()];
     h['x-robots-tag'] = NOINDEX;
     if (cfg.previewScheme === 'https') h['content-security-policy'].push('upgrade-insecure-requests');
     if (h.location) h.location = mapLocation(s, h.location, t);
