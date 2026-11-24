@@ -25,7 +25,7 @@ test('fetch-verified: download failure -> 1 (the language may be skipped)', () =
 const extras = (rc) => {
   const bin = mkdtempSync(join(tmpdir(), 'stub-'));
   writeFileSync(join(bin, 'fetch-verified'), `#!/bin/sh\nexit ${rc}\n`); chmodSync(join(bin, 'fetch-verified'), 0o755);
-  return spawnSync('bash', [EX], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ZIG_VERSION: '1', SCALA_VERSION: '1', GROOVY_VERSION: '1', PWSH_VERSION: '1' }, encoding: 'utf8' });
+  return spawnSync('bash', [EX], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ZIG_VERSION: '1', SCALA_VERSION: '1', GROOVY_VERSION: '1', PWSH_VERSION: '1', V_VERSION: '1', CODE_SERVER_VERSION: '1' }, encoding: 'utf8' });
 };
 test('install-extras: a failed download only skips the language (exit 0)', () => { const r = extras(1); assert.equal(r.status, 0); assert.match(r.stdout, /Zig not installed/); });
 test('install-extras: a checksum problem aborts the build (exit 1)', () => { const r = extras(3); assert.equal(r.status, 1); assert.match(r.stderr, /checksum problem/); });

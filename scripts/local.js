@@ -32,12 +32,16 @@ if (!env.SANDBOX_JWT_SECRET || env.SANDBOX_JWT_SECRET.length < 32) {
     'PREVIEW_DOMAIN=localhost:8787',
     'PREVIEW_SCHEME=http',
     'MAX_SESSIONS=2',
+    'PUBLIC_TUNNEL=1',
     '',
   ].join('\n'));
   try { chmodSync(ENV_FILE, 0o600); } catch { /* Windows */ } // the file holds the signing secret
   console.log(`Created ${ENV_FILE}`);
   env = Object.fromEntries(readFileSync(ENV_FILE, 'utf8').split(/\r?\n/).map((l) => /^([A-Z_]+)=(.*)$/.exec(l.trim())).filter(Boolean).map((m) => [m[1], m[2]]));
 }
+
+// the "public link" button is on by default in local mode (an .env.local from an older run may not have it)
+if (env.PUBLIC_TUNNEL === undefined) env.PUBLIC_TUNNEL = '1';
 
 // Keep the allowed origins current even when .env.local already exists (it was created by an older run):
 // the deployed site must always be in the list or the gateway refuses its WebSocket.

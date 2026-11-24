@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { _PROBE } from '../src/docker.js';
+import { _PROBE, describeExecError } from '../src/docker.js';
 
 const hasPython = spawnSync('python3', ['-V']).status === 0;
 
@@ -29,7 +29,9 @@ case "$1" in
   image) case "$*" in *Labels*) echo 6;; esac;;
   network) case "$*" in *Gateway*) echo 172.30.0.1;; *enable_icc*) echo false;; esac;;
   run) case "$*" in
-         *"--entrypoint bash"*) [ -z "$FAKE_NO_CONTROL" ] && echo CONTROL-OK; [ -n "$FAKE_LEAK" ] && echo "OPEN $FAKE_LEAK"; echo NET-OK; echo DONE;;
+         *"--entrypoint bash"*) [ -n "$FAKE_FAIL_ALWAYS" ] && exit 137
+                                if [ -n "$FAKE_FAIL_ONCE" ] && [ ! -e "$FAKE_FAIL_ONCE" ]; then : > "$FAKE_FAIL_ONCE"; exit 137; fi
+                                [ -z "$FAKE_NO_CONTROL" ] && echo CONTROL-OK; [ -n "$FAKE_LEAK" ] && echo "OPEN $FAKE_LEAK"; echo NET-OK; echo DONE;;
          *) echo cid;; esac;;
   inspect) echo 172.17.0.9;;
 esac
@@ -65,4 +67,19 @@ test('gateway REFUSES to start when the probe itself could not prove anything (n
 test('ALLOW_NO_FIREWALL=1 starts anyway, with a loud warning', { timeout: 30_000 }, async () => {
   const r = await startGateway({ FAKE_LEAK: '192.168.1.10:4000', ALLOW_NO_FIREWALL: '1' });
   assert.equal(r.state, 'started', r.out); assert.match(r.out, /ALLOW_NO_FIREWALL=1/);
+});
+
+test('a probe that fails ONCE (docker busy / out of memory) is retried instead of killing the gateway', { timeout: 30_000 }, async () => {
+  const r = await startGateway({ FAKE_FAIL_ONCE: join(mkdtempSync(join(tmpdir(), 'once-')), 'flag'), FIREWALL_RETRY_MS: '50' });
+  assert.equal(r.state, 'started', r.out); assert.match(r.out, /egress firewall verified/);
+});
+test('a probe that ALWAYS fails still refuses to start, and says why (exit code), not just the command line', { timeout: 30_000 }, async () => {
+  const r = await startGateway({ FAKE_FAIL_ALWAYS: '1', FIREWALL_RETRY_MS: '50' });
+  assert.equal(r.state, 'exited', r.out); assert.equal(r.code, 1);
+  assert.match(r.out, /Refusing to start/); assert.match(r.out, /exit code 137 \(out of memory\?\)/); assert.doesNotMatch(r.out, /Command failed/);
+});
+test('describeExecError: exit code, timeout and daemon messages are readable', () => {
+  assert.match(describeExecError({ code: 137, stderr: '' }), /exit code 137 \(out of memory\?\)/);
+  assert.match(describeExecError({ killed: true, signal: 'SIGTERM', code: null }), /timed out/);
+  assert.match(describeExecError({ code: 125, stderr: 'docker: Error response from daemon: boom\n' }), /exit code 125: docker: Error response from daemon: boom/);
 });

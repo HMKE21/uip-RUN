@@ -50,6 +50,72 @@ export async function createContainer(sid, userId) {
     ...[...PREVIEW_PORTS, ...Object.values(APP_PORTS)].flatMap((p) => ['-p', `127.0.0.1::${p}`]),
     cfg.image, 'sleep', 'infinity',
   ]);
+  await fixDns(sid);
+  await hardenContainer(sid);
+}
+
+/** The last line of harden.sh's output decides: only "HARDEN-OK" is a pass. Anything else (no output, a crash, HARDEN-FAIL lines) is a failure. */
+export function parseHardenResult(stdout) {
+  const lines = String(stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.at(-1) === 'HARDEN-OK') return { ok: true, fails: [] };
+  const fails = lines.filter((l) => l.startsWith('HARDEN-FAIL ')).map((l) => l.slice(12));
+  return { ok: false, fails: fails.length ? fails : ['no result from harden.sh'] };
+}
+
+/** What the student account itself (not root) can still do. A last, independent check after harden.sh: it looks at the result, not at the script. */
+export const _DEV_CHECK = [
+  'bad=""',
+  'for t in su sudo sudoedit runuser newgrp sg chsh chfn passwd gpasswd pkexec mount umount login; do',
+  '  for d in /bin /sbin /usr/bin /usr/sbin /usr/local/bin; do [ -f "$d/$t" ] && [ -x "$d/$t" ] && bad="$bad exec:$d/$t"; done',
+  'done',
+  'for d in /usr/local/cargo/bin /usr/local/rustup/toolchains /usr/local/go/bin /var/www/html /usr/local/bin /usr/bin /opt /etc; do [ -d "$d" ] && [ -w "$d" ] && bad="$bad write:$d"; done',
+  'sh=$(getent passwd postgres | cut -d: -f7); case "$sh" in ""|/usr/sbin/nologin|/bin/false|/sbin/nologin) ;; *) bad="$bad shell:postgres";; esac',
+  '[ -z "$bad" ] && echo DEV-OK || echo "DEV-FAIL$bad"',
+].join('\n');
+
+/**
+ * Runs image/harden.sh as root inside a fresh session container: strips setuid bits, makes su/sudo/passwd/mount... root-only,
+ * locks every password, closes world-writable toolchain folders, gives service accounts a nologin shell. Single source of truth =
+ * that file (it is also run once at image build), so even an image built before the script existed gets hardened without a rebuild.
+ *
+ * FAIL-CLOSED: if the script is missing, times out, crashes or reports anything but HARDEN-OK, or if the unprivileged `dev` user can
+ * still do something it must not, this THROWS. createContainer() then fails, the gateway removes the container and the student gets
+ * "Could not start the environment" - never a shell in a container that is not locked down. (It used to be best effort and silent,
+ * which is how an unhardened container reached students without anybody noticing.)
+ */
+export async function hardenContainer(sid) {
+  const script = readFileSync(fileURLToPath(new URL('../image/harden.sh', import.meta.url)), 'utf8'); // missing file = throw
+  const out = await new Promise((resolve, reject) => {
+    const p = spawn('docker', ['exec', '-i', '-u', '0', containerName(sid), 'sh', '-s'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let b = '';
+    const t = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* ignore */ } reject(new Error('hardening timed out')); }, 120_000); // gVisor file scans are slow
+    p.stdout.on('data', (d) => { b += d; if (b.length > 64_000) b = b.slice(-64_000); });
+    p.stderr.on('data', () => {});
+    p.on('error', (e) => { clearTimeout(t); reject(e); });
+    p.on('close', () => { clearTimeout(t); resolve(b); });
+    p.stdin.on('error', () => {});
+    p.stdin.end(script);
+  });
+  const r = parseHardenResult(out);
+  if (!r.ok) throw new Error(`container is not hardened: ${r.fails.slice(0, 5).join(', ')}`);
+  const { stdout } = await docker(['exec', '-u', 'dev', containerName(sid), 'sh', '-c', _DEV_CHECK], { timeout: 30_000 });
+  if (!/^DEV-OK$/m.test(stdout)) throw new Error(`container is not hardened (as dev): ${stdout.trim().slice(0, 300)}`);
+}
+
+/**
+ * Point the container straight at the public resolvers (SANDBOX_DNS) instead of Docker's embedded resolver (127.0.0.11).
+ * On a user-defined network the embedded resolver sometimes answers "connection refused" / EAI_AGAIN (seen with the egress firewall
+ * + a hardened container): npm, Vite proxies and cloudflared then fail on every hostname while plain IPs still work.
+ * Queries to 1.1.1.1 / 8.8.8.8 are ordinary Internet traffic, so the firewall allows them. Best effort: never blocks a session.
+ */
+export async function fixDns(sid) {
+  const c = containerName(sid);
+  const conf = [...cfg.dns.map((d) => `nameserver ${d}`), 'options timeout:2 attempts:2'].join('\\n');
+  try {
+    await docker(['exec', '-u', '0', c, 'sh', '-c', `printf '${conf}\\n' > /etc/resolv.conf`], { timeout: 15_000 });
+  } catch (e) { console.warn(`dns: could not write resolv.conf in ${c}: ${describeExecError(e)}`); return; }
+  try { await docker(['exec', '-u', 'dev', c, 'sh', '-c', 'getent ahostsv4 registry.npmjs.org >/dev/null'], { timeout: 15_000 }); }
+  catch { console.warn(`dns: ${c} still cannot resolve names — check that the host can reach ${cfg.dns.join(', ')} on UDP/TCP 53 (SANDBOX_DNS)`); }
 }
 
 /** host port that Docker mapped to each previewable container port: { 8000: 49153, … } */
@@ -67,6 +133,7 @@ export async function portMap(sid) {
 export async function uploadZip(sid, zipPath) {
   const c = containerName(sid);
   await docker(['cp', zipPath, `${c}:/tmp/project.zip`]);
+  await docker(['exec', '-u', '0', c, 'chmod', '644', '/tmp/project.zip'], { timeout: 15_000 });
   await docker(['exec', '-u', 'dev', c, 'sh', '-c',
     // `docker cp` leaves the zip owned by root inside the sticky /tmp, so the unprivileged `dev` user can read it but NOT delete it:
     // a plain `rm -f` then fails with "Operation not permitted" and the whole command is reported as failed even though the
@@ -135,6 +202,36 @@ export function openUrl(sid, url) {
   setTimeout(() => { try { p.kill(); } catch { /* ignore */ } }, 15_000).unref();
 }
 
+/** Cloudflare quick tunnel (cloudflared inside the container) to one preview port -> the public https URL, or throws. */
+export async function startTunnel(sid, port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('bad port');
+  const c = containerName(sid);
+  await stopTunnel(sid);
+  // fail fast (and with the real reason) instead of waiting 30 s for a log that will never contain an address
+  try { await docker(['exec', '-u', 'dev', c, 'sh', '-c', 'command -v cloudflared >/dev/null'], { timeout: 10_000 }); }
+  catch { throw Object.assign(new Error('cloudflared is not installed in the sandbox image (rebuild it: npm run build-image, then restart the session)'), { fatal: true }); }
+  await docker(['exec', '-u', 'dev', c, 'sh', '-c', 'rm -f /tmp/cf.log'], { timeout: 10_000 }).catch(() => {});
+  // pid file instead of pkill: procps may not be in the image
+  await docker(['exec', '-d', '-u', 'dev', c, 'sh', '-c',
+    `echo $$ > /tmp/cf.pid; exec cloudflared tunnel --no-autoupdate --url http://127.0.0.1:${port} >/tmp/cf.log 2>&1`], { timeout: 10_000 });
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const { stdout } = await docker(['exec', '-u', 'dev', c, 'sh', '-c', 'cat /tmp/cf.log 2>/dev/null'], { timeout: 8000 });
+      if (/cloudflared: (command )?not found/i.test(stdout)) throw Object.assign(new Error('cloudflared is not installed in the sandbox image'), { fatal: true });
+      if (/failed to request quick Tunnel/i.test(stdout)) throw Object.assign(new Error(`cloudflared: ${(/failed to request quick Tunnel: (.*)/i.exec(stdout) || [])[1] || 'request failed'}`.slice(0, 200)), { fatal: true });
+      const m = [...stdout.matchAll(/https:\/\/([a-z0-9-]+)\.trycloudflare\.com/g)].find((x) => x[1] !== 'api');
+      if (m) return m[0];
+    } catch (e) { if (e?.fatal) { await stopTunnel(sid); throw e; } /* container gone */ return Promise.reject(new Error('container is gone')); }
+  }
+  await stopTunnel(sid);
+  throw new Error('no tunnel address after 30 s');
+}
+
+export async function stopTunnel(sid) {
+  try { await docker(['exec', '-u', 'dev', containerName(sid), 'sh', '-c', '[ -f /tmp/cf.pid ] && kill "$(cat /tmp/cf.pid)" 2>/dev/null; rm -f /tmp/cf.pid; true'], { timeout: 10_000 }); } catch { /* ignore */ }
+}
+
 /** killing the `docker exec` client does not stop what it started inside the container */
 export async function killProcesses(sid) {
   // `kill -9 -1` would also kill the container's own `sleep infinity` and stop the container, so everything except PID 1,
@@ -183,13 +280,22 @@ export async function cleanupLeftovers() {
 // A bash script that runs INSIDE a throw-away sandbox container (same network, DNS, capabilities and runtime as a student's).
 // $@ = host:port targets. It prints CONTROL-OK when a connection that must succeed does succeed (so "no OPEN lines" can never
 // mean "the probe itself is broken"), OPEN <target> for every target that accepted a connection, NET-OK when the Internet works.
+/** A readable reason for a failed `docker` call. execFile's own message is "Command failed: <the whole command line>", which hid the real cause
+ *  (exit code 137 = out of memory, a timeout, a daemon error…) — so say that instead. */
+export function describeExecError(e) {
+  const err = String(e?.stderr || '').trim().split('\n').filter(Boolean).slice(-2).join(' | ');
+  const how = e?.killed || e?.signal ? `killed (${e.signal || 'timeout'}${e.killed ? ', timed out' : ''})` : (e?.code != null ? `exit code ${e.code}${e.code === 137 ? ' (out of memory?)' : ''}` : '');
+  const msg = err || (e?.code == null && !how ? String(e?.message || e).split('\n')[0] : '');
+  return [how, msg].filter(Boolean).join(': ') || 'docker failed';
+}
+
 export const _PROBE = [
   `python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",55555)); s.listen(5); time.sleep(10)' &`,
   `sleep 0.7`,
   `timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/55555' 2>/dev/null && echo CONTROL-OK`,
   `for t in "$@"; do ( timeout 4 bash -c "exec 3<>/dev/tcp/\${t%:*}/\${t##*:}" 2>/dev/null && echo "OPEN $t" ) & done`,
   `( timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && echo NET-OK ) &`,
-  `sleep 4.5; kill $(jobs -p) 2>/dev/null; echo DONE`,
+  `sleep 4.5; kill $(jobs -p) 2>/dev/null; echo DONE; exit 0`,
 ].join('\n');
 
 /**
@@ -228,7 +334,7 @@ export async function selfTestFirewall() {
     } catch { res.notes.push('could not start the container-to-container target (that part of the check was skipped)'); }
 
     const { stdout } = await docker(['run', '--rm', '--pull', 'never', '--network', cfg.network, ...cfg.dns.flatMap((d) => ['--dns', d]),
-      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '64', '--memory', '128m', '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',
+      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '256m', '--memory-swap', '256m', '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',
       ...(cfg.runtime ? ['--runtime', cfg.runtime] : []), '-u', 'dev', '--entrypoint', 'bash', cfg.image, '-c', _PROBE, '_', ...targets], { timeout: 90_000 });
 
     const lines = stdout.split('\n').map((l) => l.trim());
@@ -238,7 +344,7 @@ export async function selfTestFirewall() {
     res.ok = res.leaks.length === 0;
     return res;
   } catch (e) {
-    res.errors.push(String(e.stderr || e.message || e).trim().split('\n').filter(Boolean).slice(-2).join(' | '));
+    res.errors.push(describeExecError(e));
     return res;
   } finally {
     srv.close();
@@ -260,4 +366,16 @@ export async function ensureReady() {
     const { stdout } = await docker(['image', 'inspect', '--format', '{{ index .Config.Labels "uip.sandbox.rev" }}', cfg.image]);
     if (want && stdout.trim() !== want) console.warn(`⚠ ${cfg.image} is rev "${stdout.trim() || 'none'}" but image/Dockerfile is rev "${want}": some languages will be missing. Rebuild: npm run build-image`);
   } catch { /* the check is only advice */ }
+}
+
+/** selfTestFirewall, but an INCONCLUSIVE result (the check itself failed: docker busy, memory pressure…) is retried before it is believed.
+ *  A definitive leak is never retried. */
+export async function selfTestFirewallRetry(attempts = 3, delayMs = 4000) {
+  let r;
+  for (let i = 0; i < attempts; i++) {
+    r = await selfTestFirewall();
+    if (r.ok || r.leaks.length) return r;
+    if (i < attempts - 1) await new Promise((res) => setTimeout(res, delayMs));
+  }
+  return r;
 }

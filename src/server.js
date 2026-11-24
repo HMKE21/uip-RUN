@@ -84,6 +84,30 @@ async function destroy(s, reason) {
   await dk.removeContainer(s.sid);
 }
 
+// ---------------------------------------------------------------- public link (Cloudflare quick tunnel)
+// Only for the kinds that run the student's own web app. VS Code / the cloud browser are full remote-control UIs: never public.
+const canTunnel = (kind) => !!cfg.tunnel && !!dk.startTunnel && !APP_PORTS[kind];
+
+async function openTunnel(s) {
+  if (!canTunnel(s.kind) || !s.previewPort || s.tunneling || s.publicUrl) return;
+  s.tunneling = true; send(s.ws, { t: 'public', state: 'starting' });
+  try {
+    const url = await dk.startTunnel(s.sid, s.previewPort);
+    if (!sessions.has(s.sid)) return;
+    s.publicUrl = url; log('tunnel_open', { sid: s.sid, user: s.userId });
+    send(s.ws, { t: 'public', url });
+  } catch (e) {
+    send(s.ws, { t: 'public', url: null, error: String(e.message || 'failed').slice(0, 120) });
+  } finally { s.tunneling = false; }
+}
+async function closeTunnel(s, quiet = false) {
+  if (!s.publicUrl && !s.tunneling) return;
+  s.publicUrl = null;
+  try { await dk.stopTunnel?.(s.sid); } catch { /* ignore */ }
+  if (!quiet) log('tunnel_close', { sid: s.sid, user: s.userId });
+  send(s.ws, { t: 'public', url: null });
+}
+
 async function restartTerminal(s, cols, rows) {
   try { s.term?.kill(); } catch { /* ignore */ }
   s.term = null;
@@ -93,6 +117,7 @@ async function restartTerminal(s, cols, rows) {
 
 function startTerminal(s, cols, rows) {
   s.previewPort = null; s.seen = new Set(); s.out = '';
+  if (s.publicUrl) { s.publicUrl = null; send(s.ws, { t: 'public', url: null }); }
   let t;
   try { t = dk.spawnTerminal(pty, s.sid, { cols: clampCols(cols), rows: clampRows(rows) }); } catch (e) {
     return send(s.ws, { t: 'error', text: `Could not open the terminal.` });
@@ -146,6 +171,7 @@ async function pollPorts(s) {
     }
     const open = up.filter((u) => !u.loopbackOnly && mine.includes(u.port)).map((u) => u.port).sort((a, b) => PORT_ORDER.indexOf(a) - PORT_ORDER.indexOf(b));
     const stillUp = s.previewPort && open.includes(s.previewPort);
+    if (!stillUp && s.publicUrl) await closeTunnel(s, true);
     if (!stillUp && open.length) {
       s.previewPort = open[0];
       send(s.ws, { t: 'preview', url: previewUrlFor(s.sid), port: s.previewPort });
@@ -175,23 +201,31 @@ async function startSession(ws, claims, init, zip) {
   const sid = randomBytes(16).toString('hex');
   const s = { sid, userId: claims.sub, projectId: claims.pid, ws, term: null, extraKey: '', out: '', createdAt: Date.now(), lastActive: Date.now(), detachedAt: 0, previewPort: null, seen: new Set(), ports: {}, poll: null, kind: init.kind };
   sessions.set(sid, s);
+  const gone = () => !sessions.has(sid); // replaced / closed by the user while the environment was still being created
   log('session_start', { sid, user: claims.sub, project: claims.pid, kind: init.kind });
   try {
     send(ws, { t: 'status', text: 'Creating the environment…' });
     await dk.createContainer(sid, claims.sub);
+    if (gone()) throw new Error('aborted');
     s.ports = await dk.portMap(sid);
     send(ws, { t: 'status', text: 'Uploading the project…' });
     const tmp = path.join(os.tmpdir(), `uip-${sid}.zip`);
     await writeFile(tmp, zip, { mode: 0o600 });
     try { await dk.uploadZip(sid, tmp); } finally { unlink(tmp).catch(() => {}); }
-    await dk.writeScript(sid, buildScript({ kind: init.kind, entry: init.entry, previewUrl: previewUrlFor(sid), previewDomain: cfg.previewDomain, screen: validScreen(init.screen) }));
+    if (gone()) throw new Error('aborted');
+    await dk.writeScript(sid, buildScript({ kind: init.kind, entry: init.entry, previewUrl: previewUrlFor(sid), previewDomain: cfg.previewDomain, screen: validScreen(init.screen), tunnel: canTunnel(init.kind) }));
     send(ws, { t: 'status', text: 'Running' });
-    send(ws, { t: 'session', id: sid, kind: init.kind, expiresInMs: lifeMsOf(s) });
+    send(ws, { t: 'session', id: sid, kind: init.kind, expiresInMs: lifeMsOf(s), tunnel: canTunnel(init.kind) });
     startTerminal(s, init.cols, init.rows);
     watchPorts(s);
     return s;
   } catch (e) {
     // docker's stderr (paths, daemon messages) stays in the server log; the browser gets a generic message
+    if (gone()) { // the session was ended on purpose while it was starting (e.g. "replaced by a new run"): not a failure, and the browser already moved on
+      log('session_aborted', { sid, user: claims.sub });
+      await dk.removeContainer(sid); // destroy() ran before the container existed, so remove what was created afterwards
+      return null;
+    }
     log('session_failed', { sid, user: claims.sub, error: String(e.stderr || e.message || e).trim().split('\n').filter(Boolean).slice(-3).join(' | ') });
     send(ws, { t: 'error', text: 'Could not start the environment. Please try again in a moment; if it keeps failing, tell the administrator.' });
     await destroy(s, 'failed to start');
@@ -432,7 +466,8 @@ wss.on('connection', (ws, req, claims) => {
           if (!old) return send(ws, { t: 'nosession' });
           if (old.ws && old.ws !== ws) { send(old.ws, { t: 'closed', reason: 'opened in another tab' }); try { old.ws.close(); } catch { /* ignore */ } }
           old.ws = ws; old.detachedAt = 0; session = old;
-          send(ws, { t: 'session', id: old.sid, kind: old.kind, resumed: true, expiresInMs: Math.max(0, lifeMsOf(old) - (Date.now() - old.createdAt)) });
+          send(ws, { t: 'session', id: old.sid, kind: old.kind, resumed: true, expiresInMs: Math.max(0, lifeMsOf(old) - (Date.now() - old.createdAt)), tunnel: canTunnel(old.kind) });
+          if (old.publicUrl) send(ws, { t: 'public', url: old.publicUrl });
           if (old.out) send(ws, { t: 'out', d: old.out });
           if (old.previewPort) send(ws, { t: 'preview', url: previewUrlFor(old.sid), port: old.previewPort });
           try { old.term?.resize(cols, rows); } catch { /* ignore */ }
@@ -471,6 +506,7 @@ wss.on('connection', (ws, req, claims) => {
         // a new tab in the cloud browser; the address is checked here again (the client is not trusted) and handed over as one argv entry
         const u = String(m.url || '');
         if (u.length <= 2000 && /^https?:\/\/[^\s]+$/i.test(u)) dk.openUrl(session.sid, u);
+      } else if (m.t === 'tunnel') { if (m.on) await openTunnel(session); else await closeTunnel(session);
       } else if (m.t === 'stop') await destroy(session, 'stopped');
     } catch { busy = false; send(ws, { t: 'error', text: 'Bad request.' }); }
   });
@@ -491,7 +527,7 @@ async function guardNetwork() {
     console.warn('⚠ ALLOW_NO_FIREWALL=1: the egress firewall is NOT checked. Student code can reach this machine and its local network. Use it only for your own projects.');
     return;
   }
-  const r = await dk.selfTestFirewall();
+  const r = await (dk.selfTestFirewallRetry ? dk.selfTestFirewallRetry(3, Number(process.env.FIREWALL_RETRY_MS) || 4000) : dk.selfTestFirewall());
   for (const n of r.notes) console.warn(`⚠ ${n}`);
   if (!r.ok) {
     console.error(`\n✗ Refusing to start: the sandbox network is NOT isolated (${reportNet(r)}).\n  Linux server: run  sudo ./deploy/egress-firewall.sh  and start again (the systemd unit does this before every start).\n  Docker Desktop (Windows / macOS) has no such firewall — for your own projects only, set ALLOW_NO_FIREWALL=1.\n`);
@@ -499,7 +535,7 @@ async function guardNetwork() {
   }
   console.log('✔ egress firewall verified: sandboxes cannot reach the host or other containers');
   const timer = setInterval(async () => {
-    const x = await dk.selfTestFirewall();
+    const x = await (dk.selfTestFirewallRetry ? dk.selfTestFirewallRetry(2, Number(process.env.FIREWALL_RETRY_MS) || 4000) : dk.selfTestFirewall());
     if (x.ok) { if (!netGuard.ok) log('firewall_restored', {}); netGuard.ok = true; netGuard.inconclusive = 0; return; }
     if (x.leaks.length) { // definitive: the protection is gone. Block new sessions and stop the exposed ones.
       netGuard.ok = false; netGuard.why = reportNet(x); log('firewall_broken', { detail: netGuard.why });
@@ -517,6 +553,7 @@ async function main() {
   // used-token table on disk: a restart must not make a stolen token usable again
   const kept = initJtiStore(path.join(cfg.stateDir, 'jti.log'));
   setInterval(() => { try { pruneJtiStore(); } catch (e) { console.error('jti prune:', e.message); } }, 10 * 60_000).unref();
+  if (cfg.previewScheme === 'https' && (/(^|\.)example\.(com|net|org)$/.test(cfg.previewDomain) || cfg.previewDomain.startsWith('localhost'))) console.warn(`⚠ PREVIEW_DOMAIN is "${cfg.previewDomain}" — a placeholder. Preview links will not open. Set the real preview domain in the .env the service reads (systemd: EnvironmentFile=/opt/uip-sandbox/.env) and restart.`);
   await dk.ensureReady();
   await guardNetwork();
   const removed = await dk.cleanupLeftovers();

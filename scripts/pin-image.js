@@ -72,6 +72,16 @@ const DOWNLOADS = [
   { key: 'V_SHA256', url: `https://github.com/vlang/v/releases/download/${v('V_VERSION')}/v_linux.zip`, publisher: null }, // V publishes no checksum file
   // code-server publishes no checksum file: pinned on first use (compare with the release page once)
   ...[['x86_64', 'amd64'], ['aarch64', 'arm64']].map(([a, ca]) => ({ key: `CODE_SERVER_SHA256_${a.toUpperCase()}`, url: `https://github.com/coder/code-server/releases/download/v${v('CODE_SERVER_VERSION')}/code-server-${v('CODE_SERVER_VERSION')}-linux-${ca}.tar.gz`, publisher: null })),
+  // cloudflared (public-link button): was never pinned, so PINS_STRICT=1 aborted the image build the moment its download actually worked.
+  // Cloudflare lists each asset's sha256 in the GitHub release notes; if that cannot be read it falls back to first use like code-server.
+  ...[['x86_64', 'amd64'], ['aarch64', 'arm64']].map(([a, ca]) => ({ key: `CLOUDFLARED_SHA256_${a.toUpperCase()}`, url: `https://github.com/cloudflare/cloudflared/releases/download/${v('CLOUDFLARED_VERSION')}/cloudflared-linux-${ca}`, publisher: async () => {
+    if (!v('CLOUDFLARED_VERSION')) return null;
+    const r = await fetch(`https://api.github.com/repos/cloudflare/cloudflared/releases/tags/${v('CLOUDFLARED_VERSION')}`, { headers: { 'User-Agent': 'uip-sandbox-pin', Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const re = new RegExp(`(?:^|[\\s\`*|:(])cloudflared-linux-${ca}(?![\\w.-]).{0,40}?\\b([0-9a-f]{64})\\b`, 'i');
+    for (const l of String((await r.json()).body || '').split(/\r?\n/)) { const m = re.exec(l); if (m) return m[1].toLowerCase(); }
+    return null;
+  } })),
   ...['x86_64', 'aarch64'].map((a) => ({ key: `ZIG_SHA256_${a.toUpperCase()}`, url: zigUrl(a), publisher: async () => {
     const idx = JSON.parse(await text('https://ziglang.org/download/index.json'));
     return idx[v('ZIG_VERSION')]?.[`${a}-linux`]?.shasum?.toLowerCase() ?? null;

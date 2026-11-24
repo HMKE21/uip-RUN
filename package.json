@@ -9,10 +9,12 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/auth.test.js test/e2e.test.js test/firewall.test.js test/hardening.test.js test/jti-persist.test.js test/langs.test.js test/preview-hardening.test.js test/scripts.test.js test/supply.test.js",
     "local": "node scripts/local.js",
     "pin-image": "node scripts/pin-image.js",
-    "build-image": "node scripts/build-image.js"
+    "build-image": "node scripts/build-image.js",
+    "test:web": "node --test test/buildWeb.test.js test/pyRun.test.js",
+    "tunnel": "bash scripts/sandbox-tunnel.sh"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",

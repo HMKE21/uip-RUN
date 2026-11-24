@@ -17,6 +17,8 @@ export const cfg = {
   // Every session is served at <sessionId>.<PREVIEW_DOMAIN>. Needs a wildcard DNS record (+ TLS) in production.
   previewDomain: String(env.PREVIEW_DOMAIN || 'localhost:8787').toLowerCase(),
   previewScheme: env.PREVIEW_SCHEME === 'https' ? 'https' : 'http',
+  // PUBLIC_TUNNEL=1: the IDE gets a "public link" button; the gateway then opens a Cloudflare quick tunnel (cloudflared inside the container) to the project's preview port.
+  tunnel: env.PUBLIC_TUNNEL === '1',
 
   provider: env.SANDBOX_PROVIDER === 'local' ? 'local' : 'docker', // 'local' = NO isolation, development/tests only
   image: String(env.SANDBOX_IMAGE || 'uip-sandbox:latest'),

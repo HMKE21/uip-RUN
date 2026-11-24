@@ -47,7 +47,7 @@ const AUTO = [
 ];
 
 function body(kind, ctx) {
-  const { entry, previewUrl, previewDomain, https, screen } = ctx;
+  const { entry, previewUrl, previewDomain, https, screen, tunnel } = ctx;
   if (kind === 'auto') {
     if (entry) return body('lang', ctx);
     // The prelude is written to a file ONCE and every branch sources it. Repeating it in each branch made the script > 128 KB,
@@ -60,7 +60,7 @@ function body(kind, ctx) {
     .replaceAll('@ENTRY@', () => shq(entry))
     .replaceAll('@SCREEN@', () => shq(screen))
     .replaceAll('@PREVIEW_URL@', () => shq(previewUrl))
-    .replaceAll('@ALLOWED_HOSTS@', () => shq(`.${previewDomain.replace(/:\d+$/, '')}`))
+    .replaceAll('@ALLOWED_HOSTS@', () => shq(`.${previewDomain.replace(/:\d+$/, '')}${tunnel ? ',.trycloudflare.com' : ''}`))
     .replaceAll('@HTTPS_EXPORTS@', () => (https ? 'export HTTPS=on SESSION_SECURE_COOKIE=true SESSION_SAME_SITE=none' : ''));
 }
 
@@ -68,11 +68,11 @@ function body(kind, ctx) {
  * @param {{kind: string, entry?: string, previewUrl: string, previewDomain: string, screen?: string}} o
  * @returns {string} bash script text
  */
-export function buildScript({ kind, entry = '', previewUrl, previewDomain, screen = '1366x768' }) {
+export function buildScript({ kind, entry = '', previewUrl, previewDomain, screen = '1366x768', tunnel = false }) {
   if (!/^\d{3,4}x\d{3,4}$/.test(screen)) throw new Error('bad screen size');
   if (!KINDS.includes(kind)) throw new Error(`unknown kind: ${kind}`);
   const https = /^https:/i.test(previewUrl);
-  const inner = `${PRELUDE}\n${body(kind, { entry, previewUrl, previewDomain, https, screen })}`.trim();
+  const inner = `${PRELUDE}\n${body(kind, { entry, previewUrl, previewDomain, https, screen, tunnel })}`.trim();
   return [
     'cd /home/dev/project',
     `bash -c ${shq(inner)}`,

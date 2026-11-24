@@ -42,7 +42,7 @@ FROM ${DART_IMAGE} AS src_dart
 FROM ${IPE_IMAGE} AS src_ipe
 
 FROM ${BASE_IMAGE}
-LABEL uip.sandbox.rev="8"
+LABEL uip.sandbox.rev="9"
 # helper scripts (sed: a Windows checkout may have turned the line endings into CRLF)
 COPY fetch-verified.sh /usr/local/bin/fetch-verified
 COPY install-extras.sh /tmp/install-extras.sh
@@ -126,6 +126,10 @@ ARG V_SHA256=
 ARG CODE_SERVER_VERSION=4.96.4
 ARG CODE_SERVER_SHA256_X86_64=
 ARG CODE_SERVER_SHA256_AARCH64=
+# cloudflared (quick tunnels: share a preview with `cloudflared tunnel --url http://127.0.0.1:5173`). Leave CLOUDFLARED_VERSION empty to skip it.
+ARG CLOUDFLARED_VERSION=2025.11.1
+ARG CLOUDFLARED_SHA256_X86_64=
+ARG CLOUDFLARED_SHA256_AARCH64=
 ARG ZIG_SHA256_X86_64=
 ARG ZIG_SHA256_AARCH64=
 ARG SCALA_SHA256=
@@ -133,6 +137,8 @@ ARG GROOVY_SHA256=
 ARG PWSH_SHA256_X86_64=
 ARG PWSH_SHA256_AARCH64=
 ARG PINS_STRICT=0
+# tools the build must NOT silently skip (see install-extras.sh); EXTRAS_REQUIRED="" disables the check
+ARG EXTRAS_REQUIRED="cloudflared code-server"
 RUN bash /tmp/install-extras.sh && rm -f /tmp/install-extras.sh
 
 ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/share/dotnet:/usr/local/julia/bin:/usr/lib/dart/bin:/opt/gradle/bin:/opt/kotlinc/bin:/opt/zig:/opt/scala3/bin:/opt/groovy/bin:/opt/pwsh:/opt/v:${PATH}" \
@@ -143,6 +149,11 @@ ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/share/dotnet:/usr/local/ju
 
 # unprivileged user — the project lives in /home/dev/project
 RUN useradd -m -u 1000 -s /bin/bash dev && mkdir -p /home/dev/project && chown -R dev:dev /home/dev
+# hardening (setuid bits, su/sudo/passwd root-only, locked passwords, world-writable toolchain dirs, service-account shells).
+# `build` verifies everything and FAILS THE BUILD if anything is still open; the gateway re-applies the same script to every new
+# container (and refuses to start a session if that does not end in HARDEN-OK). Keep this as the LAST step that touches files.
+COPY harden.sh /tmp/harden.sh
+RUN sed -i 's/\r$//' /tmp/harden.sh && sh /tmp/harden.sh build && rm -f /tmp/harden.sh
 ENV COMPOSER_ALLOW_SUPERUSER=0 COMPOSER_MEMORY_LIMIT=-1 npm_config_update_notifier=false PHP_CLI_SERVER_WORKERS=4
 USER dev
 WORKDIR /home/dev/project
